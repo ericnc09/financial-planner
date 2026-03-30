@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["/Users/eric/financial-planner/dashboard/start.sh"],
+      "port": 5173,
+      "cwd": "/Users/eric/financial-planner/dashboard"
+    }
+  ]
+}

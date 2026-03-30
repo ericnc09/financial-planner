@@ -1,0 +1,21 @@
+import type { DashboardData, Signal, MacroData } from '../types';
+
+const BASE = '/api';
+
+async function fetchJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export const api = {
+  getDashboard: () => fetchJson<DashboardData>('/dashboard'),
+  getSignals: (days = 14, minConviction?: number) => {
+    const params = new URLSearchParams({ days: String(days) });
+    if (minConviction !== undefined) params.set('min_conviction', String(minConviction));
+    return fetchJson<Signal[]>(`/signals?${params}`);
+  },
+  getMacro: () => fetchJson<MacroData>('/macro'),
+  getMacroHistory: (days = 90) => fetchJson<MacroData[]>(`/macro/history?days=${days}`),
+  triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
+};
