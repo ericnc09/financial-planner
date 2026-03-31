@@ -1,4 +1,4 @@
-import type { DashboardData, Signal, MacroData } from '../types';
+import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData } from '../types';
 
 const BASE = '/api';
 
@@ -17,5 +17,8 @@ export const api = {
   },
   getMacro: () => fetchJson<MacroData>('/macro'),
   getMacroHistory: (days = 90) => fetchJson<MacroData[]>(`/macro/history?days=${days}`),
+  getExtendedMacro: () => fetchJson<ExtendedMacroData>('/macro/extended'),
+  getTickerAnalysis: (ticker: string) => fetchJson<TickerAnalysis>(`/analysis/${ticker}`),
+  getAllHMM: () => fetchJson<HMMData[]>('/analysis/hmm/all'),
   triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
 };

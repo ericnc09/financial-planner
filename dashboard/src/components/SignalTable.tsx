@@ -4,11 +4,12 @@ import { ConvictionBar } from './ConvictionBar';
 
 interface Props {
   signals: Signal[];
+  onTickerClick?: (ticker: string) => void;
 }
 
 type SortKey = 'conviction' | 'trade_date' | 'ticker';
 
-export const SignalTable: React.FC<Props> = ({ signals }) => {
+export const SignalTable: React.FC<Props> = ({ signals, onTickerClick }) => {
   const [sortKey, setSortKey] = useState<SortKey>('conviction');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -66,7 +67,12 @@ export const SignalTable: React.FC<Props> = ({ signals }) => {
                 borderBottom: '1px solid #21262d', cursor: 'pointer',
                 background: expandedId === s.id ? '#1c2129' : 'transparent',
               }}>
-                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{s.ticker}</td>
+                <td style={{ padding: '10px 12px', fontWeight: 600 }}>
+                  <span
+                    onClick={(e) => { e.stopPropagation(); onTickerClick?.(s.ticker); }}
+                    style={{ cursor: 'pointer', color: '#818cf8', textDecoration: 'underline' }}
+                  >{s.ticker}</span>
+                </td>
                 <td style={{ padding: '10px 12px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{

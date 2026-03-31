@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 
 import httpx
@@ -37,7 +38,15 @@ class TiingoClient:
             timeout=30.0,
         )
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=30),
+        retry=lambda retry_state: (
+            retry_state.outcome is not None
+            and retry_state.outcome.failed
+            and not isinstance(retry_state.outcome.exception(), httpx.HTTPStatusError)
+        ),
+    )
     async def _get(self, path: str, params: dict | None = None) -> dict | list:
         resp = await self._client.get(path, params=params)
         resp.raise_for_status()
@@ -102,11 +111,13 @@ class TiingoClient:
         start_1y = (today - timedelta(days=400)).strftime("%Y-%m-%d")
         end = today.strftime("%Y-%m-%d")
 
-        # Fetch in parallel-safe order (sequential to respect rate limits)
+        # Sequential with delay to respect free-tier rate limits
         prices_90d = await self.get_price_history(ticker, start_90d, end)
+        await asyncio.sleep(1.0)
         prices_1y = await self.get_price_history(ticker, start_1y, end)
+        await asyncio.sleep(1.0)
         fundamentals = await self.get_fundamentals_daily(ticker)
-        statements = await self.get_fundamentals_statements(ticker)
+        await asyncio.sleep(1.0)
         metadata = await self.get_metadata(ticker)
 
         # Current price
@@ -142,17 +153,10 @@ class TiingoClient:
         pe_ratio = fundamentals.get("peRatio") if fundamentals else None
         market_cap = fundamentals.get("marketCap") if fundamentals else None
 
-        # EPS from statements
-        eps_latest = None
+        # EPS from fundamentals daily endpoint
+        eps_latest = fundamentals.get("epsTTM") if fundamentals else None
         eps_growth_yoy = None
         revenue_growth_yoy = None
-        if len(statements) >= 2:
-            for stmt in statements:
-                if stmt.get("statementData"):
-                    for section in stmt["statementData"].values():
-                        for item in section:
-                            if item.get("dataCode") == "eps" and eps_latest is None:
-                                eps_latest = item.get("value")
 
         # Sector from metadata
         sector = None

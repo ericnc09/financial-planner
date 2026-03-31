@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { DashboardData } from '../types';
 import { MacroGauge } from './MacroGauge';
+import { ExtendedMacro } from './ExtendedMacro';
 import { SignalTable } from './SignalTable';
+import { TickerDetail } from './TickerDetail';
 
 interface Props {
   data: DashboardData;
@@ -20,7 +22,8 @@ const StatCard: React.FC<{ label: string; value: string; color?: string }> = ({ 
 );
 
 export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loading }) => {
-  const { signals, macro } = data;
+  const { signals, macro, extended_macro } = data;
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
 
   const passingSignals = signals.filter(s => s.passes_threshold).length;
   const buySignals = signals.filter(s => s.direction === 'buy').length;
@@ -70,9 +73,17 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
         </div>
       )}
 
+      {/* Extended Macro */}
+      {extended_macro && <ExtendedMacro data={extended_macro} />}
+
+      {/* Ticker Analysis Detail Panel */}
+      {selectedTicker && (
+        <TickerDetail ticker={selectedTicker} onClose={() => setSelectedTicker(null)} />
+      )}
+
       {/* Signals Table */}
       <div style={{ marginBottom: 20 }}>
-        <SignalTable signals={signals} />
+        <SignalTable signals={signals} onTickerClick={setSelectedTicker} />
       </div>
     </div>
   );

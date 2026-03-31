@@ -108,6 +108,56 @@ class FredClient:
 
         return regime, round(regime_score, 3)
 
+    def get_vix(self) -> float | None:
+        try:
+            series = self._fred.get_series("VIXCLS")
+            return float(series.dropna().iloc[-1])
+        except Exception as e:
+            logger.warning("fred.vix_failed", error=str(e))
+            return None
+
+    def get_consumer_sentiment(self) -> float | None:
+        try:
+            series = self._fred.get_series("UMCSENT")
+            return float(series.dropna().iloc[-1])
+        except Exception as e:
+            logger.warning("fred.consumer_sentiment_failed", error=str(e))
+            return None
+
+    def get_money_supply_m2(self) -> float | None:
+        try:
+            series = self._fred.get_series("M2SL")
+            return float(series.dropna().iloc[-1])
+        except Exception as e:
+            logger.warning("fred.m2_failed", error=str(e))
+            return None
+
+    def get_housing_starts(self) -> float | None:
+        try:
+            series = self._fred.get_series("HOUST")
+            return float(series.dropna().iloc[-1])
+        except Exception as e:
+            logger.warning("fred.housing_starts_failed", error=str(e))
+            return None
+
+    def get_industrial_production(self) -> float | None:
+        try:
+            series = self._fred.get_series("INDPRO")
+            return float(series.dropna().iloc[-1])
+        except Exception as e:
+            logger.warning("fred.industrial_production_failed", error=str(e))
+            return None
+
+    def get_extended_macro(self) -> dict:
+        """Fetch all extended macro indicators."""
+        return {
+            "vix": self.get_vix(),
+            "consumer_sentiment": self.get_consumer_sentiment(),
+            "money_supply_m2": self.get_money_supply_m2(),
+            "housing_starts": self.get_housing_starts(),
+            "industrial_production": self.get_industrial_production(),
+        }
+
     def get_macro_snapshot(self) -> MacroSnapshotSchema:
         from datetime import datetime
 

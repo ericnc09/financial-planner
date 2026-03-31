@@ -6,15 +6,25 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import Settings
+from src.analysis.garch_forecast import GARCHForecaster
+from src.analysis.hmm_regime import HMMRegimeDetector
+from src.analysis.monte_carlo import MonteCarloSimulator
 from src.clients.congress import CongressClient
 from src.clients.edgar import EdgarClient
+from src.clients.fama_french import FamaFrenchClient
 from src.clients.fred import FredClient
 from src.clients.tiingo import TiingoClient
+from src.clients.yahoo import YahooClient
 from src.models.database import (
     ConvictionScore,
     Direction,
     Enrichment,
+    ExtendedMacroData,
+    FamaFrenchExposure,
+    GARCHForecast,
+    HMMRegimeState,
     MacroSnapshot,
+    MonteCarloResult,
     SmartMoneyEvent,
     SourceType,
     get_session_factory,
@@ -38,6 +48,11 @@ class Orchestrator:
         self.congress: CongressClient | None = None
         self.tiingo: TiingoClient | None = None
         self.fred: FredClient | None = None
+        self.yahoo: YahooClient | None = None
+        self.fama_french: FamaFrenchClient | None = None
+        self.monte_carlo: MonteCarloSimulator | None = None
+        self.hmm: HMMRegimeDetector | None = None
+        self.garch: GARCHForecaster | None = None
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
@@ -54,6 +69,13 @@ class Orchestrator:
         self.congress = CongressClient()
         self.tiingo = TiingoClient(self.settings.tiingo_api_key)
         self.fred = FredClient(self.settings.fred_api_key)
+        self.yahoo = YahooClient()
+        self.fama_french = FamaFrenchClient()
+
+        # Analysis models
+        self.monte_carlo = MonteCarloSimulator(n_simulations=10_000)
+        self.hmm = HMMRegimeDetector()
+        self.garch = GARCHForecaster()
 
         # Scoring
         signal_scorer = SignalScorer()
@@ -91,6 +113,18 @@ class Orchestrator:
         # --- Step 3: MACRO ---
         macro_snapshot = await asyncio.to_thread(self.fred.get_macro_snapshot)
         self._persist_macro_snapshot(macro_snapshot)
+
+        # --- Step 3b: EXTENDED MACRO ---
+        try:
+            extended_macro = await asyncio.to_thread(self.fred.get_extended_macro)
+            self._persist_extended_macro(extended_macro)
+            logger.info("orchestrator.extended_macro_saved", data=extended_macro)
+        except Exception as e:
+            logger.warning("orchestrator.extended_macro_failed", error=str(e))
+
+        # --- Step 3c: ANALYSIS MODELS (Monte Carlo, HMM, GARCH, Fama-French) ---
+        unique_tickers = list({schema.ticker for _, schema in new_events})
+        await self._run_analysis_models(unique_tickers)
 
         # --- Step 4: SCORE ---
         scored = []
@@ -151,30 +185,34 @@ class Orchestrator:
         return new_events
 
     async def _enrich_events(self, new_events):
-        sem = asyncio.Semaphore(5)
         results = []
+        # Deduplicate: enrich each ticker once, reuse for all events with same ticker
+        ticker_cache: dict[str, object] = {}
+        unique_tickers = list({schema.ticker for _, schema in new_events})
+        logger.info(
+            "orchestrator.enriching",
+            unique_tickers=len(unique_tickers),
+            total_events=len(new_events),
+        )
 
-        async def _enrich_one(event_id, event_schema):
-            async with sem:
-                try:
-                    enrichment = await self.tiingo.enrich_ticker(
-                        event_schema.ticker
-                    )
-                    self._persist_enrichment(event_id, enrichment)
-                    return (event_id, event_schema, enrichment)
-                except Exception as e:
-                    logger.warning(
-                        "orchestrator.enrich_failed",
-                        ticker=event_schema.ticker,
-                        error=str(e),
-                    )
-                    return None
+        for ticker in unique_tickers:
+            try:
+                enrichment = await self.tiingo.enrich_ticker(ticker)
+                ticker_cache[ticker] = enrichment
+                logger.info("orchestrator.enriched_ticker", ticker=ticker)
+            except Exception as e:
+                logger.warning(
+                    "orchestrator.enrich_failed",
+                    ticker=ticker,
+                    error=str(e),
+                )
 
-        tasks = [_enrich_one(eid, schema) for eid, schema in new_events]
-        for coro in asyncio.as_completed(tasks):
-            result = await coro
-            if result:
-                results.append(result)
+        for event_id, event_schema in new_events:
+            enrichment = ticker_cache.get(event_schema.ticker)
+            if enrichment:
+                self._persist_enrichment(event_id, enrichment)
+                results.append((event_id, event_schema, enrichment))
+
         return results
 
     def _persist_enrichment(self, event_id, enrichment_schema):
@@ -242,6 +280,197 @@ class Orchestrator:
         finally:
             session.close()
 
+    async def _run_analysis_models(self, tickers: list[str]):
+        """Run Monte Carlo, HMM, GARCH, and Fama-French on each unique ticker."""
+        logger.info("orchestrator.analysis_start", tickers=len(tickers))
+        run_date = datetime.utcnow()
+
+        # Pre-load Fama-French factors once
+        ff_factors = await self.fama_french.get_factors(days=252)
+
+        for ticker in tickers:
+            try:
+                # Get price data from yfinance (free, no rate limit)
+                price_data = await self.yahoo.get_price_history(ticker, days=504)
+                if price_data is None:
+                    logger.warning("orchestrator.analysis_no_data", ticker=ticker)
+                    continue
+
+                closes = price_data["closes"]
+                returns = price_data["returns"]
+                volumes = price_data["volumes"]
+
+                # Monte Carlo
+                try:
+                    mc_result = self.monte_carlo.simulate(closes, horizons=[21, 63])
+                    if mc_result:
+                        self._persist_monte_carlo(ticker, run_date, mc_result)
+                except Exception as e:
+                    logger.warning("orchestrator.mc_failed", ticker=ticker, error=str(e))
+
+                # HMM Regime Detection
+                try:
+                    hmm_result = await self.hmm.fit_and_predict(returns, volumes)
+                    if hmm_result:
+                        self._persist_hmm(ticker, run_date, hmm_result)
+                except Exception as e:
+                    logger.warning("orchestrator.hmm_failed", ticker=ticker, error=str(e))
+
+                # GARCH Volatility Forecast
+                try:
+                    garch_result = await self.garch.forecast(returns, horizons=[5, 20])
+                    if garch_result:
+                        self._persist_garch(ticker, run_date, garch_result)
+                except Exception as e:
+                    logger.warning("orchestrator.garch_failed", ticker=ticker, error=str(e))
+
+                # Fama-French Factor Exposure
+                try:
+                    if ff_factors is not None:
+                        ff_result = self.fama_french.compute_factor_exposure(returns, ff_factors)
+                        if ff_result:
+                            self._persist_fama_french(ticker, run_date, ff_result)
+                except Exception as e:
+                    logger.warning("orchestrator.ff_failed", ticker=ticker, error=str(e))
+
+                logger.info("orchestrator.analysis_complete", ticker=ticker)
+            except Exception as e:
+                logger.warning("orchestrator.analysis_ticker_failed", ticker=ticker, error=str(e))
+
+        logger.info("orchestrator.analysis_done", tickers=len(tickers))
+
+    def _persist_monte_carlo(self, ticker: str, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            h30 = result["horizons"].get(21, {})
+            h90 = result["horizons"].get(63, {})
+            mc = MonteCarloResult(
+                ticker=ticker,
+                run_date=run_date,
+                current_price=result["current_price"],
+                annual_drift=result["annual_drift"],
+                annual_volatility=result["annual_volatility"],
+                n_simulations=result["n_simulations"],
+                h30_p10=h30.get("percentiles", {}).get("p10"),
+                h30_p25=h30.get("percentiles", {}).get("p25"),
+                h30_p50=h30.get("percentiles", {}).get("p50"),
+                h30_p75=h30.get("percentiles", {}).get("p75"),
+                h30_p90=h30.get("percentiles", {}).get("p90"),
+                h30_prob_profit=h30.get("probability_of_profit"),
+                h30_expected_return=h30.get("expected_return"),
+                h30_var_95=h30.get("value_at_risk_95"),
+                h90_p10=h90.get("percentiles", {}).get("p10"),
+                h90_p25=h90.get("percentiles", {}).get("p25"),
+                h90_p50=h90.get("percentiles", {}).get("p50"),
+                h90_p75=h90.get("percentiles", {}).get("p75"),
+                h90_p90=h90.get("percentiles", {}).get("p90"),
+                h90_prob_profit=h90.get("probability_of_profit"),
+                h90_expected_return=h90.get("expected_return"),
+                h90_var_95=h90.get("value_at_risk_95"),
+            )
+            session.add(mc)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    def _persist_hmm(self, ticker: str, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            current = result["current_state"]
+            probs = result["current_probabilities"]
+            trans = result["transition_matrix"].get(current, {})
+            hmm = HMMRegimeState(
+                ticker=ticker,
+                run_date=run_date,
+                current_state=current,
+                prob_bull=probs.get("bull"),
+                prob_bear=probs.get("bear"),
+                prob_sideways=probs.get("sideways"),
+                trans_to_bull=trans.get("bull"),
+                trans_to_bear=trans.get("bear"),
+                trans_to_sideways=trans.get("sideways"),
+                n_observations=result["n_observations"],
+            )
+            session.add(hmm)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    def _persist_garch(self, ticker: str, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            f5 = result["forecasts"].get(5, {})
+            f20 = result["forecasts"].get(20, {})
+            gf = GARCHForecast(
+                ticker=ticker,
+                run_date=run_date,
+                omega=result["parameters"]["omega"],
+                alpha=result["parameters"]["alpha"],
+                beta=result["parameters"]["beta"],
+                persistence=result["parameters"]["persistence"],
+                current_vol_annual=result["current_conditional_vol_annual"],
+                long_run_vol_annual=result["long_run_vol_annual"],
+                historical_vol_20d=result["historical_vol_20d"],
+                historical_vol_60d=result["historical_vol_60d"],
+                forecast_5d_vol=f5.get("predicted_volatility_annual"),
+                forecast_5d_ratio=f5.get("volatility_ratio"),
+                forecast_5d_interpretation=f5.get("interpretation"),
+                forecast_20d_vol=f20.get("predicted_volatility_annual"),
+                forecast_20d_ratio=f20.get("volatility_ratio"),
+                forecast_20d_interpretation=f20.get("interpretation"),
+                n_observations=result["n_observations"],
+            )
+            session.add(gf)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    def _persist_fama_french(self, ticker: str, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            ff = FamaFrenchExposure(
+                ticker=ticker,
+                run_date=run_date,
+                alpha_daily=result["alpha_daily"],
+                alpha_annual=result["alpha_annual"],
+                beta_market=result["beta_market"],
+                beta_smb=result["beta_smb"],
+                beta_hml=result["beta_hml"],
+                beta_rmw=result["beta_rmw"],
+                beta_cma=result["beta_cma"],
+                r_squared=result["r_squared"],
+            )
+            session.add(ff)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    def _persist_extended_macro(self, data: dict):
+        session = self.session_factory()
+        try:
+            em = ExtendedMacroData(
+                snapshot_date=datetime.utcnow(),
+                vix=data.get("vix"),
+                consumer_sentiment=data.get("consumer_sentiment"),
+                money_supply_m2=data.get("money_supply_m2"),
+                housing_starts=data.get("housing_starts"),
+                industrial_production=data.get("industrial_production"),
+            )
+            session.add(em)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
     async def run_oneshot(self):
         await self.initialize()
         await self.run_cycle()
@@ -278,6 +507,10 @@ class Orchestrator:
             await self.congress.close()
         if self.tiingo:
             await self.tiingo.close()
+        if self.yahoo:
+            await self.yahoo.close()
+        if self.fama_french:
+            await self.fama_french.close()
 
 
 if __name__ == "__main__":

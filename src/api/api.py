@@ -12,7 +12,12 @@ from config.settings import Settings
 from src.models.database import (
     ConvictionScore,
     Enrichment,
+    ExtendedMacroData,
+    FamaFrenchExposure,
+    GARCHForecast,
+    HMMRegimeState,
     MacroSnapshot,
+    MonteCarloResult,
     SmartMoneyEvent,
     SourceType,
     get_session_factory,
@@ -54,9 +59,78 @@ class MacroResponse(BaseModel):
     regime_score: float | None = None
 
 
+class MonteCarloResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    current_price: float
+    annual_drift: float | None = None
+    annual_volatility: float | None = None
+    n_simulations: int
+    horizons: dict  # {30: {percentiles, prob_profit, ...}, 90: {...}}
+
+
+class HMMResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    current_state: str
+    prob_bull: float | None = None
+    prob_bear: float | None = None
+    prob_sideways: float | None = None
+    trans_to_bull: float | None = None
+    trans_to_bear: float | None = None
+    trans_to_sideways: float | None = None
+
+
+class GARCHResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    persistence: float | None = None
+    current_vol_annual: float | None = None
+    long_run_vol_annual: float | None = None
+    historical_vol_20d: float | None = None
+    historical_vol_60d: float | None = None
+    forecast_5d_vol: float | None = None
+    forecast_5d_ratio: float | None = None
+    forecast_5d_interpretation: str | None = None
+    forecast_20d_vol: float | None = None
+    forecast_20d_ratio: float | None = None
+    forecast_20d_interpretation: str | None = None
+
+
+class FamaFrenchResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    alpha_annual: float | None = None
+    beta_market: float | None = None
+    beta_smb: float | None = None
+    beta_hml: float | None = None
+    beta_rmw: float | None = None
+    beta_cma: float | None = None
+    r_squared: float | None = None
+
+
+class ExtendedMacroResponse(BaseModel):
+    snapshot_date: datetime
+    vix: float | None = None
+    consumer_sentiment: float | None = None
+    money_supply_m2: float | None = None
+    housing_starts: float | None = None
+    industrial_production: float | None = None
+    put_call_ratio: float | None = None
+
+
+class TickerAnalysisResponse(BaseModel):
+    ticker: str
+    monte_carlo: MonteCarloResponse | None = None
+    hmm: HMMResponse | None = None
+    garch: GARCHResponse | None = None
+    fama_french: FamaFrenchResponse | None = None
+
+
 class DashboardResponse(BaseModel):
     signals: list[SignalResponse]
     macro: MacroResponse | None = None
+    extended_macro: ExtendedMacroResponse | None = None
 
 
 # --- App Setup ---
@@ -247,6 +321,147 @@ def get_macro_history(days: int = Query(default=90, ge=1, le=365)):
         session.close()
 
 
+@app.get("/api/analysis/{ticker}", response_model=TickerAnalysisResponse)
+def get_ticker_analysis(ticker: str):
+    """Get all analysis model results for a ticker."""
+    ticker = ticker.upper()
+    session = app.state.session_factory()
+    try:
+        mc = session.query(MonteCarloResult).filter(
+            MonteCarloResult.ticker == ticker
+        ).order_by(desc(MonteCarloResult.run_date)).first()
+
+        hmm = session.query(HMMRegimeState).filter(
+            HMMRegimeState.ticker == ticker
+        ).order_by(desc(HMMRegimeState.run_date)).first()
+
+        garch = session.query(GARCHForecast).filter(
+            GARCHForecast.ticker == ticker
+        ).order_by(desc(GARCHForecast.run_date)).first()
+
+        ff = session.query(FamaFrenchExposure).filter(
+            FamaFrenchExposure.ticker == ticker
+        ).order_by(desc(FamaFrenchExposure.run_date)).first()
+
+        mc_resp = None
+        if mc:
+            mc_resp = MonteCarloResponse(
+                ticker=mc.ticker,
+                run_date=mc.run_date,
+                current_price=mc.current_price,
+                annual_drift=mc.annual_drift,
+                annual_volatility=mc.annual_volatility,
+                n_simulations=mc.n_simulations,
+                horizons={
+                    30: {
+                        "percentiles": {"p10": mc.h30_p10, "p25": mc.h30_p25, "p50": mc.h30_p50, "p75": mc.h30_p75, "p90": mc.h30_p90},
+                        "probability_of_profit": mc.h30_prob_profit,
+                        "expected_return": mc.h30_expected_return,
+                        "value_at_risk_95": mc.h30_var_95,
+                    },
+                    90: {
+                        "percentiles": {"p10": mc.h90_p10, "p25": mc.h90_p25, "p50": mc.h90_p50, "p75": mc.h90_p75, "p90": mc.h90_p90},
+                        "probability_of_profit": mc.h90_prob_profit,
+                        "expected_return": mc.h90_expected_return,
+                        "value_at_risk_95": mc.h90_var_95,
+                    },
+                },
+            )
+
+        hmm_resp = None
+        if hmm:
+            hmm_resp = HMMResponse(
+                ticker=hmm.ticker, run_date=hmm.run_date,
+                current_state=hmm.current_state,
+                prob_bull=hmm.prob_bull, prob_bear=hmm.prob_bear, prob_sideways=hmm.prob_sideways,
+                trans_to_bull=hmm.trans_to_bull, trans_to_bear=hmm.trans_to_bear, trans_to_sideways=hmm.trans_to_sideways,
+            )
+
+        garch_resp = None
+        if garch:
+            garch_resp = GARCHResponse(
+                ticker=garch.ticker, run_date=garch.run_date,
+                persistence=garch.persistence,
+                current_vol_annual=garch.current_vol_annual, long_run_vol_annual=garch.long_run_vol_annual,
+                historical_vol_20d=garch.historical_vol_20d, historical_vol_60d=garch.historical_vol_60d,
+                forecast_5d_vol=garch.forecast_5d_vol, forecast_5d_ratio=garch.forecast_5d_ratio,
+                forecast_5d_interpretation=garch.forecast_5d_interpretation,
+                forecast_20d_vol=garch.forecast_20d_vol, forecast_20d_ratio=garch.forecast_20d_ratio,
+                forecast_20d_interpretation=garch.forecast_20d_interpretation,
+            )
+
+        ff_resp = None
+        if ff:
+            ff_resp = FamaFrenchResponse(
+                ticker=ff.ticker, run_date=ff.run_date,
+                alpha_annual=ff.alpha_annual, beta_market=ff.beta_market,
+                beta_smb=ff.beta_smb, beta_hml=ff.beta_hml,
+                beta_rmw=ff.beta_rmw, beta_cma=ff.beta_cma,
+                r_squared=ff.r_squared,
+            )
+
+        return TickerAnalysisResponse(
+            ticker=ticker,
+            monte_carlo=mc_resp,
+            hmm=hmm_resp,
+            garch=garch_resp,
+            fama_french=ff_resp,
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/analysis/hmm/all", response_model=list[HMMResponse])
+def get_all_hmm_states():
+    """Get latest HMM regime state for all tickers."""
+    session = app.state.session_factory()
+    try:
+        from sqlalchemy import func
+        subq = session.query(
+            HMMRegimeState.ticker,
+            func.max(HMMRegimeState.run_date).label("max_date")
+        ).group_by(HMMRegimeState.ticker).subquery()
+
+        results = session.query(HMMRegimeState).join(
+            subq,
+            (HMMRegimeState.ticker == subq.c.ticker) &
+            (HMMRegimeState.run_date == subq.c.max_date)
+        ).all()
+
+        return [
+            HMMResponse(
+                ticker=r.ticker, run_date=r.run_date,
+                current_state=r.current_state,
+                prob_bull=r.prob_bull, prob_bear=r.prob_bear, prob_sideways=r.prob_sideways,
+                trans_to_bull=r.trans_to_bull, trans_to_bear=r.trans_to_bear, trans_to_sideways=r.trans_to_sideways,
+            ) for r in results
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/api/macro/extended", response_model=ExtendedMacroResponse | None)
+def get_extended_macro():
+    session = app.state.session_factory()
+    try:
+        em = session.query(ExtendedMacroData).order_by(
+            desc(ExtendedMacroData.snapshot_date)
+        ).first()
+        if not em:
+            return None
+        return ExtendedMacroResponse(
+            snapshot_date=em.snapshot_date,
+            vix=em.vix,
+            consumer_sentiment=em.consumer_sentiment,
+            money_supply_m2=em.money_supply_m2,
+            housing_starts=em.housing_starts,
+            industrial_production=em.industrial_production,
+            put_call_ratio=em.put_call_ratio,
+        )
+    finally:
+        session.close()
+
+
 @app.post("/api/pipeline/run")
 async def trigger_pipeline():
     orchestrator = Orchestrator(app.state.settings)
@@ -265,7 +480,9 @@ async def _run_pipeline(orchestrator: Orchestrator):
 def get_dashboard():
     signals = get_signals(days=14, source=None, min_conviction=None)
     macro = get_macro()
+    ext_macro = get_extended_macro()
     return DashboardResponse(
         signals=signals[:20],
         macro=macro,
+        extended_macro=ext_macro,
     )

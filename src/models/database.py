@@ -132,6 +132,144 @@ class ConvictionScore(Base):
     event = relationship("SmartMoneyEvent", back_populates="conviction_score")
 
 
+class MonteCarloResult(Base):
+    __tablename__ = "monte_carlo_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+
+    current_price = Column(Float, nullable=False)
+    annual_drift = Column(Float, nullable=True)
+    annual_volatility = Column(Float, nullable=True)
+    n_simulations = Column(Integer, nullable=False)
+
+    # 30-day horizon
+    h30_p10 = Column(Float, nullable=True)
+    h30_p25 = Column(Float, nullable=True)
+    h30_p50 = Column(Float, nullable=True)
+    h30_p75 = Column(Float, nullable=True)
+    h30_p90 = Column(Float, nullable=True)
+    h30_prob_profit = Column(Float, nullable=True)
+    h30_expected_return = Column(Float, nullable=True)
+    h30_var_95 = Column(Float, nullable=True)
+
+    # 90-day horizon
+    h90_p10 = Column(Float, nullable=True)
+    h90_p25 = Column(Float, nullable=True)
+    h90_p50 = Column(Float, nullable=True)
+    h90_p75 = Column(Float, nullable=True)
+    h90_p90 = Column(Float, nullable=True)
+    h90_prob_profit = Column(Float, nullable=True)
+    h90_expected_return = Column(Float, nullable=True)
+    h90_var_95 = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_mc_ticker_date"),
+    )
+
+
+class HMMRegimeState(Base):
+    __tablename__ = "hmm_regime_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+
+    current_state = Column(String(20), nullable=False)  # bull/bear/sideways
+    prob_bull = Column(Float, nullable=True)
+    prob_bear = Column(Float, nullable=True)
+    prob_sideways = Column(Float, nullable=True)
+
+    # Transition probabilities from current state
+    trans_to_bull = Column(Float, nullable=True)
+    trans_to_bear = Column(Float, nullable=True)
+    trans_to_sideways = Column(Float, nullable=True)
+
+    n_observations = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_hmm_ticker_date"),
+    )
+
+
+class GARCHForecast(Base):
+    __tablename__ = "garch_forecasts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+
+    # GARCH parameters
+    omega = Column(Float, nullable=True)
+    alpha = Column(Float, nullable=True)
+    beta = Column(Float, nullable=True)
+    persistence = Column(Float, nullable=True)
+
+    # Volatility values
+    current_vol_annual = Column(Float, nullable=True)
+    long_run_vol_annual = Column(Float, nullable=True)
+    historical_vol_20d = Column(Float, nullable=True)
+    historical_vol_60d = Column(Float, nullable=True)
+
+    # Forecasts
+    forecast_5d_vol = Column(Float, nullable=True)
+    forecast_5d_ratio = Column(Float, nullable=True)
+    forecast_5d_interpretation = Column(String(50), nullable=True)
+    forecast_20d_vol = Column(Float, nullable=True)
+    forecast_20d_ratio = Column(Float, nullable=True)
+    forecast_20d_interpretation = Column(String(50), nullable=True)
+
+    n_observations = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_garch_ticker_date"),
+    )
+
+
+class FamaFrenchExposure(Base):
+    __tablename__ = "fama_french_exposures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+
+    alpha_daily = Column(Float, nullable=True)
+    alpha_annual = Column(Float, nullable=True)
+    beta_market = Column(Float, nullable=True)
+    beta_smb = Column(Float, nullable=True)
+    beta_hml = Column(Float, nullable=True)
+    beta_rmw = Column(Float, nullable=True)
+    beta_cma = Column(Float, nullable=True)
+    r_squared = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_ff_ticker_date"),
+    )
+
+
+class ExtendedMacroData(Base):
+    __tablename__ = "extended_macro_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(DateTime, nullable=False, unique=True, index=True)
+
+    vix = Column(Float, nullable=True)
+    consumer_sentiment = Column(Float, nullable=True)
+    money_supply_m2 = Column(Float, nullable=True)
+    housing_starts = Column(Float, nullable=True)
+    industrial_production = Column(Float, nullable=True)
+    put_call_ratio = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # --- Engine / Session helpers ---
 
 
