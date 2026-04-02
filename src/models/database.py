@@ -288,6 +288,126 @@ class EventStudyResult(Base):
     )
 
 
+class CopulaTailRiskResult(Base):
+    __tablename__ = "copula_tail_risk_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+
+    n_observations = Column(Integer, nullable=True)
+    gaussian_rho = Column(Float, nullable=True)
+    student_t_rho = Column(Float, nullable=True)
+    student_t_nu = Column(Float, nullable=True)
+    tail_dep_lower = Column(Float, nullable=True)
+    tail_dep_upper = Column(Float, nullable=True)
+    joint_crash_prob = Column(Float, nullable=True)
+    tail_dep_ratio = Column(Float, nullable=True)
+    var_95 = Column(Float, nullable=True)
+    var_99 = Column(Float, nullable=True)
+    cvar_95 = Column(Float, nullable=True)
+    cvar_99 = Column(Float, nullable=True)
+    conditional_var_95 = Column(Float, nullable=True)
+    conditional_cvar_95 = Column(Float, nullable=True)
+    tail_risk_score = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_copula_ticker_date"),
+    )
+
+
+class BayesianDecayResult(Base):
+    __tablename__ = "bayesian_decay_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    event_id = Column(Integer, ForeignKey("smart_money_events.id"), nullable=False)
+    run_date = Column(DateTime, nullable=False)
+
+    direction = Column(String(10), nullable=False)
+    n_days = Column(Integer, nullable=True)
+    total_car = Column(Float, nullable=True)
+    posterior_half_life = Column(Float, nullable=True)
+    posterior_lambda = Column(Float, nullable=True)
+    ci_half_life_lower = Column(Float, nullable=True)
+    ci_half_life_upper = Column(Float, nullable=True)
+    entry_window_days = Column(Float, nullable=True)
+    exit_window_days = Column(Float, nullable=True)
+    annualized_ir = Column(Float, nullable=True)
+    decay_quality = Column(String(20), nullable=True)
+    signal_strength_5d = Column(Float, nullable=True)
+    signal_strength_20d = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "run_date", name="uq_bd_event_date"),
+    )
+
+
+class MeanVarianceResult(Base):
+    __tablename__ = "mean_variance_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_date = Column(DateTime, nullable=False, unique=True, index=True)
+
+    n_assets = Column(Integer, nullable=False)
+    tickers = Column(Text, nullable=False)  # JSON array
+
+    # Max Sharpe portfolio
+    ms_weights = Column(Text, nullable=True)  # JSON {ticker: weight}
+    ms_return = Column(Float, nullable=True)
+    ms_volatility = Column(Float, nullable=True)
+    ms_sharpe = Column(Float, nullable=True)
+
+    # Min Variance portfolio
+    mv_weights = Column(Text, nullable=True)
+    mv_return = Column(Float, nullable=True)
+    mv_volatility = Column(Float, nullable=True)
+
+    # Equal Weight baseline
+    ew_return = Column(Float, nullable=True)
+    ew_volatility = Column(Float, nullable=True)
+    ew_sharpe = Column(Float, nullable=True)
+
+    efficient_frontier = Column(Text, nullable=True)  # JSON array
+    risk_contribution = Column(Text, nullable=True)  # JSON {ticker: pct}
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EnsembleScoreResult(Base):
+    __tablename__ = "ensemble_score_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    event_id = Column(Integer, ForeignKey("smart_money_events.id"), nullable=False)
+    run_date = Column(DateTime, nullable=False)
+
+    direction = Column(String(10), nullable=False)
+    total_score = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=True)
+    recommendation = Column(String(20), nullable=True)
+    n_models = Column(Integer, nullable=True)
+
+    # Component scores
+    score_monte_carlo = Column(Float, nullable=True)
+    score_hmm = Column(Float, nullable=True)
+    score_garch = Column(Float, nullable=True)
+    score_fama_french = Column(Float, nullable=True)
+    score_copula = Column(Float, nullable=True)
+    score_bayesian_decay = Column(Float, nullable=True)
+    score_event_study = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "run_date", name="uq_ens_event_date"),
+    )
+
+
 class ExtendedMacroData(Base):
     __tablename__ = "extended_macro_data"
 

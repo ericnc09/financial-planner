@@ -6,9 +6,13 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import Settings
+from src.analysis.bayesian_decay import BayesianDecayAnalyzer
+from src.analysis.copula_tail_risk import CopulaTailRisk
+from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.event_study import EventStudyAnalyzer
 from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.hmm_regime import HMMRegimeDetector
+from src.analysis.mean_variance import MeanVarianceOptimizer
 from src.analysis.monte_carlo import MonteCarloSimulator
 from src.clients.congress import CongressClient
 from src.clients.edgar import EdgarClient
@@ -20,8 +24,12 @@ from src.models.database import (
     ConvictionScore,
     Direction,
     Enrichment,
+    BayesianDecayResult,
+    CopulaTailRiskResult,
+    EnsembleScoreResult,
     EventStudyResult,
     ExtendedMacroData,
+    MeanVarianceResult,
     FamaFrenchExposure,
     GARCHForecast,
     HMMRegimeState,
@@ -56,6 +64,10 @@ class Orchestrator:
         self.hmm: HMMRegimeDetector | None = None
         self.garch: GARCHForecaster | None = None
         self.event_study: EventStudyAnalyzer | None = None
+        self.copula: CopulaTailRisk | None = None
+        self.bayesian_decay: BayesianDecayAnalyzer | None = None
+        self.mean_variance: MeanVarianceOptimizer | None = None
+        self.ensemble: EnsembleScorer | None = None
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
@@ -80,6 +92,10 @@ class Orchestrator:
         self.hmm = HMMRegimeDetector()
         self.garch = GARCHForecaster()
         self.event_study = EventStudyAnalyzer()
+        self.copula = CopulaTailRisk()
+        self.bayesian_decay = BayesianDecayAnalyzer()
+        self.mean_variance = MeanVarianceOptimizer()
+        self.ensemble = EnsembleScorer()
 
         # Scoring
         signal_scorer = SignalScorer()
@@ -130,8 +146,17 @@ class Orchestrator:
         unique_tickers = list({schema.ticker for _, schema in new_events})
         await self._run_analysis_models(unique_tickers)
 
-        # --- Step 3d: EVENT STUDY ---
+        # --- Step 3d: COPULA TAIL RISK ---
+        await self._run_copula_analysis(unique_tickers)
+
+        # --- Step 3e: MEAN-VARIANCE OPTIMIZATION ---
+        await self._run_mean_variance(unique_tickers)
+
+        # --- Step 3f: EVENT STUDY + BAYESIAN DECAY ---
         await self._run_event_studies(new_events)
+
+        # --- Step 3g: ENSEMBLE SCORING ---
+        await self._run_ensemble_scoring(new_events)
 
         # --- Step 4: SCORE ---
         scored = []
@@ -560,6 +585,237 @@ class Orchestrator:
                 daily_cars=json.dumps(result["daily_cars"]),
             )
             session.add(es)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    async def _run_copula_analysis(self, tickers: list[str]):
+        """Run copula tail risk on each ticker vs market."""
+        import json
+        logger.info("orchestrator.copula_start", tickers=len(tickers))
+        run_date = datetime.utcnow()
+
+        ff_factors = await self.fama_french.get_factors(days=504)
+        if ff_factors is None:
+            logger.warning("orchestrator.copula_no_factors")
+            return
+
+        market_returns = ff_factors["Mkt-RF"].values
+
+        for ticker in tickers:
+            try:
+                price_data = await self.yahoo.get_price_history(ticker, days=504)
+                if price_data is None:
+                    continue
+                n = min(len(price_data["returns"]), len(market_returns))
+                result = self.copula.analyze(price_data["returns"][-n:], market_returns[-n:])
+                if result:
+                    self._persist_copula(ticker, run_date, result)
+            except Exception as e:
+                logger.warning("orchestrator.copula_failed", ticker=ticker, error=str(e))
+
+        logger.info("orchestrator.copula_done")
+
+    def _persist_copula(self, ticker: str, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            row = CopulaTailRiskResult(
+                ticker=ticker, run_date=run_date,
+                n_observations=result["n_observations"],
+                gaussian_rho=result["gaussian_rho"],
+                student_t_rho=result["student_t_rho"],
+                student_t_nu=result["student_t_nu"],
+                tail_dep_lower=result["tail_dep_lower"],
+                tail_dep_upper=result["tail_dep_upper"],
+                joint_crash_prob=result["joint_crash_prob"],
+                tail_dep_ratio=result["tail_dep_ratio"],
+                var_95=result["var_95"],
+                var_99=result["var_99"],
+                cvar_95=result["cvar_95"],
+                cvar_99=result["cvar_99"],
+                conditional_var_95=result["conditional_var_95"],
+                conditional_cvar_95=result["conditional_cvar_95"],
+                tail_risk_score=result["tail_risk_score"],
+            )
+            session.add(row)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    async def _run_mean_variance(self, tickers: list[str]):
+        """Run mean-variance optimization across all signal tickers."""
+        import json
+        import numpy as np
+
+        if len(tickers) < 2:
+            logger.info("orchestrator.meanvar_skip", reason="need >= 2 tickers")
+            return
+
+        logger.info("orchestrator.meanvar_start", tickers=len(tickers))
+        run_date = datetime.utcnow()
+
+        # Collect returns for all tickers
+        valid_tickers = []
+        returns_list = []
+        for ticker in tickers:
+            try:
+                price_data = await self.yahoo.get_price_history(ticker, days=252)
+                if price_data and len(price_data["returns"]) >= 30:
+                    valid_tickers.append(ticker)
+                    returns_list.append(price_data["returns"])
+            except Exception as e:
+                logger.warning("orchestrator.meanvar_data_failed", ticker=ticker, error=str(e))
+
+        if len(valid_tickers) < 2:
+            logger.info("orchestrator.meanvar_skip", reason="insufficient valid tickers")
+            return
+
+        # Align to common length
+        min_len = min(len(r) for r in returns_list)
+        returns_matrix = np.column_stack([r[-min_len:] for r in returns_list])
+
+        result = self.mean_variance.optimize(valid_tickers, returns_matrix)
+        if result:
+            self._persist_mean_variance(run_date, result)
+
+        logger.info("orchestrator.meanvar_done")
+
+    def _persist_mean_variance(self, run_date: datetime, result: dict):
+        import json
+        session = self.session_factory()
+        try:
+            row = MeanVarianceResult(
+                run_date=run_date,
+                n_assets=result["n_assets"],
+                tickers=json.dumps(result["tickers"]),
+                ms_weights=json.dumps(result["max_sharpe"]["weights"]),
+                ms_return=result["max_sharpe"]["expected_return"],
+                ms_volatility=result["max_sharpe"]["volatility"],
+                ms_sharpe=result["max_sharpe"]["sharpe_ratio"],
+                mv_weights=json.dumps(result["min_variance"]["weights"]),
+                mv_return=result["min_variance"]["expected_return"],
+                mv_volatility=result["min_variance"]["volatility"],
+                ew_return=result["equal_weight"]["expected_return"],
+                ew_volatility=result["equal_weight"]["volatility"],
+                ew_sharpe=result["equal_weight"]["sharpe_ratio"],
+                efficient_frontier=json.dumps(result["efficient_frontier"]),
+                risk_contribution=json.dumps(result["risk_contribution"]),
+            )
+            session.add(row)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    async def _run_ensemble_scoring(self, new_events: list):
+        """Run ensemble scoring combining all model outputs per event."""
+        logger.info("orchestrator.ensemble_start", events=len(new_events))
+        run_date = datetime.utcnow()
+
+        for event_id, event_schema in new_events:
+            try:
+                ticker = event_schema.ticker
+                session = self.session_factory()
+                try:
+                    # Gather latest model results for this ticker
+                    from sqlalchemy import desc
+                    mc = session.query(MonteCarloResult).filter(
+                        MonteCarloResult.ticker == ticker
+                    ).order_by(desc(MonteCarloResult.run_date)).first()
+
+                    hmm = session.query(HMMRegimeState).filter(
+                        HMMRegimeState.ticker == ticker
+                    ).order_by(desc(HMMRegimeState.run_date)).first()
+
+                    garch = session.query(GARCHForecast).filter(
+                        GARCHForecast.ticker == ticker
+                    ).order_by(desc(GARCHForecast.run_date)).first()
+
+                    ff = session.query(FamaFrenchExposure).filter(
+                        FamaFrenchExposure.ticker == ticker
+                    ).order_by(desc(FamaFrenchExposure.run_date)).first()
+
+                    copula_row = session.query(CopulaTailRiskResult).filter(
+                        CopulaTailRiskResult.ticker == ticker
+                    ).order_by(desc(CopulaTailRiskResult.run_date)).first()
+
+                    bd_row = session.query(BayesianDecayResult).filter(
+                        BayesianDecayResult.event_id == event_id
+                    ).order_by(desc(BayesianDecayResult.run_date)).first()
+
+                    es_row = session.query(EventStudyResult).filter(
+                        EventStudyResult.event_id == event_id
+                    ).order_by(desc(EventStudyResult.run_date)).first()
+                finally:
+                    session.close()
+
+                # Convert DB rows to dicts for ensemble scorer
+                mc_dict = {"horizons": {30: {
+                    "probability_of_profit": mc.h30_prob_profit,
+                    "expected_return": mc.h30_expected_return,
+                }}} if mc else None
+
+                hmm_dict = {"current_state": hmm.current_state,
+                            "prob_bull": hmm.prob_bull, "prob_bear": hmm.prob_bear,
+                            "prob_sideways": hmm.prob_sideways} if hmm else None
+
+                garch_dict = {"forecast_5d_ratio": garch.forecast_5d_ratio,
+                              "forecast_20d_ratio": garch.forecast_20d_ratio} if garch else None
+
+                ff_dict = {"alpha_annual": ff.alpha_annual,
+                           "r_squared": ff.r_squared} if ff else None
+
+                cop_dict = {"tail_risk_score": copula_row.tail_risk_score} if copula_row else None
+
+                bd_dict = {"decay_quality": bd_row.decay_quality,
+                           "signal_strength": {5: {"remaining_pct": bd_row.signal_strength_5d or 0}}} if bd_row else None
+
+                es_dict = {"car_5d": es_row.car_5d, "car_20d": es_row.car_20d,
+                           "is_significant": es_row.is_significant} if es_row else None
+
+                result = self.ensemble.score(
+                    direction=event_schema.direction.value,
+                    monte_carlo=mc_dict,
+                    hmm=hmm_dict,
+                    garch=garch_dict,
+                    fama_french=ff_dict,
+                    copula=cop_dict,
+                    bayesian_decay=bd_dict,
+                    event_study=es_dict,
+                )
+
+                self._persist_ensemble(ticker, event_id, run_date, result)
+
+            except Exception as e:
+                logger.warning("orchestrator.ensemble_failed", ticker=event_schema.ticker, error=str(e))
+
+        logger.info("orchestrator.ensemble_done")
+
+    def _persist_ensemble(self, ticker: str, event_id: int, run_date: datetime, result: dict):
+        session = self.session_factory()
+        try:
+            components = result.get("components", {})
+            row = EnsembleScoreResult(
+                ticker=ticker, event_id=event_id, run_date=run_date,
+                direction=result["direction"],
+                total_score=result["total_score"],
+                confidence=result["confidence"],
+                recommendation=result["recommendation"],
+                n_models=result["n_models"],
+                score_monte_carlo=components.get("monte_carlo"),
+                score_hmm=components.get("hmm_regime"),
+                score_garch=components.get("garch"),
+                score_fama_french=components.get("fama_french"),
+                score_copula=components.get("copula_tail"),
+                score_bayesian_decay=components.get("bayesian_decay"),
+                score_event_study=components.get("event_study"),
+            )
+            session.add(row)
             session.commit()
         except IntegrityError:
             session.rollback()

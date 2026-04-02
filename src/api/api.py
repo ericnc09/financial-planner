@@ -10,7 +10,10 @@ from sqlalchemy import desc
 
 from config.settings import Settings
 from src.models.database import (
+    BayesianDecayResult,
     ConvictionScore,
+    CopulaTailRiskResult,
+    EnsembleScoreResult,
     Enrichment,
     EventStudyResult,
     ExtendedMacroData,
@@ -18,6 +21,7 @@ from src.models.database import (
     GARCHForecast,
     HMMRegimeState,
     MacroSnapshot,
+    MeanVarianceResult,
     MonteCarloResult,
     SmartMoneyEvent,
     SourceType,
@@ -153,13 +157,71 @@ class EventStudyAggregateResponse(BaseModel):
     by_source: dict | None = None
 
 
+class CopulaTailRiskResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    gaussian_rho: float | None = None
+    student_t_rho: float | None = None
+    student_t_nu: float | None = None
+    tail_dep_lower: float | None = None
+    tail_dep_upper: float | None = None
+    joint_crash_prob: float | None = None
+    tail_dep_ratio: float | None = None
+    var_95: float | None = None
+    var_99: float | None = None
+    cvar_95: float | None = None
+    cvar_99: float | None = None
+    conditional_var_95: float | None = None
+    conditional_cvar_95: float | None = None
+    tail_risk_score: float | None = None
+
+
+class BayesianDecayResponse(BaseModel):
+    ticker: str
+    event_id: int
+    direction: str
+    total_car: float | None = None
+    posterior_half_life: float | None = None
+    entry_window_days: float | None = None
+    exit_window_days: float | None = None
+    annualized_ir: float | None = None
+    decay_quality: str | None = None
+    signal_strength_5d: float | None = None
+    signal_strength_20d: float | None = None
+
+
+class MeanVarianceResponse(BaseModel):
+    run_date: datetime
+    n_assets: int
+    tickers: list[str]
+    max_sharpe: dict
+    min_variance: dict
+    equal_weight: dict
+    efficient_frontier: list[dict]
+    risk_contribution: dict
+
+
+class EnsembleScoreResponse(BaseModel):
+    ticker: str
+    event_id: int
+    direction: str
+    total_score: float
+    confidence: float | None = None
+    recommendation: str | None = None
+    n_models: int | None = None
+    components: dict
+
+
 class TickerAnalysisResponse(BaseModel):
     ticker: str
     monte_carlo: MonteCarloResponse | None = None
     hmm: HMMResponse | None = None
     garch: GARCHResponse | None = None
     fama_french: FamaFrenchResponse | None = None
+    copula_tail_risk: CopulaTailRiskResponse | None = None
     event_studies: list[EventStudyResponse] | None = None
+    bayesian_decay: list[BayesianDecayResponse] | None = None
+    ensemble_scores: list[EnsembleScoreResponse] | None = None
 
 
 class DashboardResponse(BaseModel):
@@ -435,36 +497,84 @@ def get_ticker_analysis(ticker: str):
                 r_squared=ff.r_squared,
             )
 
-        # Event studies for this ticker
+        # Copula Tail Risk
+        copula_row = session.query(CopulaTailRiskResult).filter(
+            CopulaTailRiskResult.ticker == ticker
+        ).order_by(desc(CopulaTailRiskResult.run_date)).first()
+
+        copula_resp = None
+        if copula_row:
+            copula_resp = CopulaTailRiskResponse(
+                ticker=copula_row.ticker, run_date=copula_row.run_date,
+                gaussian_rho=copula_row.gaussian_rho, student_t_rho=copula_row.student_t_rho,
+                student_t_nu=copula_row.student_t_nu,
+                tail_dep_lower=copula_row.tail_dep_lower, tail_dep_upper=copula_row.tail_dep_upper,
+                joint_crash_prob=copula_row.joint_crash_prob, tail_dep_ratio=copula_row.tail_dep_ratio,
+                var_95=copula_row.var_95, var_99=copula_row.var_99,
+                cvar_95=copula_row.cvar_95, cvar_99=copula_row.cvar_99,
+                conditional_var_95=copula_row.conditional_var_95, conditional_cvar_95=copula_row.conditional_cvar_95,
+                tail_risk_score=copula_row.tail_risk_score,
+            )
+
+        # Event studies
+        import json as _json
         es_rows = session.query(EventStudyResult).filter(
             EventStudyResult.ticker == ticker
         ).order_by(desc(EventStudyResult.run_date)).limit(20).all()
 
         es_resp = None
         if es_rows:
-            import json
             es_resp = []
             for es in es_rows:
                 daily = []
                 if es.daily_cars:
                     try:
-                        daily = json.loads(es.daily_cars)
+                        daily = _json.loads(es.daily_cars)
                     except Exception:
                         pass
                 es_resp.append(EventStudyResponse(
-                    ticker=es.ticker,
-                    event_id=es.event_id,
-                    direction=es.direction,
-                    source_type=es.source_type,
-                    car_1d=es.car_1d,
-                    car_5d=es.car_5d,
-                    car_10d=es.car_10d,
-                    car_20d=es.car_20d,
-                    t_statistic=es.t_statistic,
-                    p_value=es.p_value,
-                    is_significant=es.is_significant,
+                    ticker=es.ticker, event_id=es.event_id,
+                    direction=es.direction, source_type=es.source_type,
+                    car_1d=es.car_1d, car_5d=es.car_5d, car_10d=es.car_10d, car_20d=es.car_20d,
+                    t_statistic=es.t_statistic, p_value=es.p_value, is_significant=es.is_significant,
                     daily_cars=daily,
                 ))
+
+        # Bayesian Decay
+        bd_rows = session.query(BayesianDecayResult).filter(
+            BayesianDecayResult.ticker == ticker
+        ).order_by(desc(BayesianDecayResult.run_date)).limit(20).all()
+
+        bd_resp = None
+        if bd_rows:
+            bd_resp = [BayesianDecayResponse(
+                ticker=bd.ticker, event_id=bd.event_id, direction=bd.direction,
+                total_car=bd.total_car, posterior_half_life=bd.posterior_half_life,
+                entry_window_days=bd.entry_window_days, exit_window_days=bd.exit_window_days,
+                annualized_ir=bd.annualized_ir, decay_quality=bd.decay_quality,
+                signal_strength_5d=bd.signal_strength_5d, signal_strength_20d=bd.signal_strength_20d,
+            ) for bd in bd_rows]
+
+        # Ensemble Scores
+        ens_rows = session.query(EnsembleScoreResult).filter(
+            EnsembleScoreResult.ticker == ticker
+        ).order_by(desc(EnsembleScoreResult.run_date)).limit(20).all()
+
+        ens_resp = None
+        if ens_rows:
+            ens_resp = [EnsembleScoreResponse(
+                ticker=e.ticker, event_id=e.event_id, direction=e.direction,
+                total_score=e.total_score, confidence=e.confidence,
+                recommendation=e.recommendation, n_models=e.n_models,
+                components={
+                    k: v for k, v in {
+                        "monte_carlo": e.score_monte_carlo, "hmm_regime": e.score_hmm,
+                        "garch": e.score_garch, "fama_french": e.score_fama_french,
+                        "copula_tail": e.score_copula, "bayesian_decay": e.score_bayesian_decay,
+                        "event_study": e.score_event_study,
+                    }.items() if v is not None
+                },
+            ) for e in ens_rows]
 
         return TickerAnalysisResponse(
             ticker=ticker,
@@ -472,7 +582,10 @@ def get_ticker_analysis(ticker: str):
             hmm=hmm_resp,
             garch=garch_resp,
             fama_french=ff_resp,
+            copula_tail_risk=copula_resp,
             event_studies=es_resp,
+            bayesian_decay=bd_resp,
+            ensemble_scores=ens_resp,
         )
     finally:
         session.close()
@@ -602,6 +715,68 @@ def get_event_study_summary():
             by_direction=by_dir,
             by_source=by_src,
         )
+    finally:
+        session.close()
+
+
+@app.get("/api/analysis/mean-variance", response_model=MeanVarianceResponse | None)
+def get_mean_variance():
+    """Get latest mean-variance portfolio optimization."""
+    import json as _json
+    session = app.state.session_factory()
+    try:
+        row = session.query(MeanVarianceResult).order_by(
+            desc(MeanVarianceResult.run_date)
+        ).first()
+        if not row:
+            return None
+        return MeanVarianceResponse(
+            run_date=row.run_date,
+            n_assets=row.n_assets,
+            tickers=_json.loads(row.tickers),
+            max_sharpe={"weights": _json.loads(row.ms_weights), "expected_return": row.ms_return,
+                        "volatility": row.ms_volatility, "sharpe_ratio": row.ms_sharpe},
+            min_variance={"weights": _json.loads(row.mv_weights), "expected_return": row.mv_return,
+                          "volatility": row.mv_volatility},
+            equal_weight={"expected_return": row.ew_return, "volatility": row.ew_volatility,
+                          "sharpe_ratio": row.ew_sharpe},
+            efficient_frontier=_json.loads(row.efficient_frontier) if row.efficient_frontier else [],
+            risk_contribution=_json.loads(row.risk_contribution) if row.risk_contribution else {},
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/analysis/ensemble/all", response_model=list[EnsembleScoreResponse])
+def get_all_ensemble_scores():
+    """Get latest ensemble scores for all events."""
+    session = app.state.session_factory()
+    try:
+        from sqlalchemy import func
+        subq = session.query(
+            EnsembleScoreResult.event_id,
+            func.max(EnsembleScoreResult.run_date).label("max_date")
+        ).group_by(EnsembleScoreResult.event_id).subquery()
+
+        rows = session.query(EnsembleScoreResult).join(
+            subq,
+            (EnsembleScoreResult.event_id == subq.c.event_id) &
+            (EnsembleScoreResult.run_date == subq.c.max_date)
+        ).order_by(desc(EnsembleScoreResult.total_score)).all()
+
+        return [EnsembleScoreResponse(
+            ticker=e.ticker, event_id=e.event_id, direction=e.direction,
+            total_score=e.total_score, confidence=e.confidence,
+            recommendation=e.recommendation, n_models=e.n_models,
+            components={
+                k: v for k, v in {
+                    "monte_carlo": e.score_monte_carlo, "hmm_regime": e.score_hmm,
+                    "garch": e.score_garch, "fama_french": e.score_fama_french,
+                    "copula_tail": e.score_copula, "bayesian_decay": e.score_bayesian_decay,
+                    "event_study": e.score_event_study,
+                }.items() if v is not None
+            },
+        ) for e in rows]
     finally:
         session.close()
 

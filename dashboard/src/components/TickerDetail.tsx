@@ -5,6 +5,9 @@ import { MonteCarloChart } from './MonteCarloChart';
 import { VolatilityForecast } from './VolatilityForecast';
 import { EventStudyChart } from './EventStudyChart';
 import { FactorExposure } from './FactorExposure';
+import { TailRiskGauge } from './TailRiskGauge';
+import { EnsembleScore } from './EnsembleScore';
+import { BayesianDecayChart } from './BayesianDecayChart';
 
 interface Props {
   ticker: string;
@@ -23,6 +26,12 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
       .finally(() => setLoading(false));
   }, [ticker]);
 
+  const hasData = data && (
+    data.monte_carlo || data.hmm || data.garch || data.fama_french ||
+    data.copula_tail_risk || data.event_studies?.length ||
+    data.bayesian_decay?.length || data.ensemble_scores?.length
+  );
+
   return (
     <div style={{
       background: '#0d1117', border: '1px solid #30363d', borderRadius: 12,
@@ -40,51 +49,64 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
 
       {loading && <div style={{ color: '#8b949e', fontSize: 13 }}>Loading analysis...</div>}
 
-      {!loading && !data?.monte_carlo && !data?.hmm && !data?.garch && !data?.fama_french && !data?.event_studies?.length && (
+      {!loading && !hasData && (
         <div style={{ color: '#8b949e', fontSize: 13 }}>
           No analysis data yet. Run the pipeline to generate model results.
         </div>
       )}
 
-      {!loading && data && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {data.monte_carlo && <MonteCarloChart data={data.monte_carlo} />}
-          {data.garch && <VolatilityForecast data={data.garch} />}
-          {data.hmm && (
-            <div style={{ background: '#161b22', borderRadius: 8, padding: 16, border: '1px solid #30363d' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#e1e4e8', marginBottom: 12 }}>HMM Regime</div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                {(['bull', 'bear', 'sideways'] as const).map(state => {
-                  const prob = state === 'bull' ? data.hmm!.prob_bull
-                    : state === 'bear' ? data.hmm!.prob_bear
-                    : data.hmm!.prob_sideways;
-                  const color = state === 'bull' ? '#22c55e' : state === 'bear' ? '#ef4444' : '#f59e0b';
-                  const isCurrent = data.hmm!.current_state === state;
-                  return (
-                    <div key={state} style={{
-                      flex: 1, textAlign: 'center', padding: '8px 4px', borderRadius: 6,
-                      background: isCurrent ? color + '22' : '#0d1117',
-                      border: `1px solid ${isCurrent ? color : '#30363d'}`,
-                    }}>
-                      <div style={{ fontSize: 11, color: '#8b949e', textTransform: 'capitalize' }}>{state}</div>
-                      <div style={{ fontSize: 16, fontWeight: 700, color }}>{((prob || 0) * 100).toFixed(0)}%</div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: 11, color: '#8b949e' }}>
-                Transition from {data.hmm.current_state}:
-                Bull {((data.hmm.trans_to_bull || 0) * 100).toFixed(0)}% |
-                Bear {((data.hmm.trans_to_bear || 0) * 100).toFixed(0)}% |
-                Sideways {((data.hmm.trans_to_sideways || 0) * 100).toFixed(0)}%
-              </div>
+      {!loading && data && hasData && (
+        <>
+          {/* Ensemble score banner if available */}
+          {data.ensemble_scores && data.ensemble_scores.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <EnsembleScore data={data.ensemble_scores[0]} />
             </div>
           )}
-          {data.fama_french && <FactorExposure data={data.fama_french} />}
-          {data.event_studies && data.event_studies.length > 0 && (
-            <EventStudyChart events={data.event_studies} />
-          )}
-        </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            {data.monte_carlo && <MonteCarloChart data={data.monte_carlo} />}
+            {data.garch && <VolatilityForecast data={data.garch} />}
+            {data.hmm && (
+              <div style={{ background: '#161b22', borderRadius: 8, padding: 16, border: '1px solid #30363d' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#e1e4e8', marginBottom: 12 }}>HMM Regime</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  {(['bull', 'bear', 'sideways'] as const).map(state => {
+                    const prob = state === 'bull' ? data.hmm!.prob_bull
+                      : state === 'bear' ? data.hmm!.prob_bear
+                      : data.hmm!.prob_sideways;
+                    const color = state === 'bull' ? '#22c55e' : state === 'bear' ? '#ef4444' : '#f59e0b';
+                    const isCurrent = data.hmm!.current_state === state;
+                    return (
+                      <div key={state} style={{
+                        flex: 1, textAlign: 'center', padding: '8px 4px', borderRadius: 6,
+                        background: isCurrent ? color + '22' : '#0d1117',
+                        border: `1px solid ${isCurrent ? color : '#30363d'}`,
+                      }}>
+                        <div style={{ fontSize: 11, color: '#8b949e', textTransform: 'capitalize' }}>{state}</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color }}>{((prob || 0) * 100).toFixed(0)}%</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: '#8b949e' }}>
+                  Transition from {data.hmm.current_state}:
+                  Bull {((data.hmm.trans_to_bull || 0) * 100).toFixed(0)}% |
+                  Bear {((data.hmm.trans_to_bear || 0) * 100).toFixed(0)}% |
+                  Sideways {((data.hmm.trans_to_sideways || 0) * 100).toFixed(0)}%
+                </div>
+              </div>
+            )}
+            {data.fama_french && <FactorExposure data={data.fama_french} />}
+            {data.copula_tail_risk && <TailRiskGauge data={data.copula_tail_risk} />}
+            {data.bayesian_decay && data.bayesian_decay.length > 0 && (
+              <BayesianDecayChart data={data.bayesian_decay[0]} />
+            )}
+            {data.event_studies && data.event_studies.length > 0 && (
+              <EventStudyChart events={data.event_studies} />
+            )}
+          </div>
+        </>
       )}
     </div>
   );

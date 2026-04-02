@@ -107,13 +107,71 @@ export interface EventStudyData {
   daily_cars: number[];
 }
 
+export interface CopulaTailRiskData {
+  ticker: string;
+  run_date: string;
+  gaussian_rho: number | null;
+  student_t_rho: number | null;
+  student_t_nu: number | null;
+  tail_dep_lower: number | null;
+  tail_dep_upper: number | null;
+  joint_crash_prob: number | null;
+  tail_dep_ratio: number | null;
+  var_95: number | null;
+  var_99: number | null;
+  cvar_95: number | null;
+  cvar_99: number | null;
+  conditional_var_95: number | null;
+  conditional_cvar_95: number | null;
+  tail_risk_score: number | null;
+}
+
+export interface BayesianDecayData {
+  ticker: string;
+  event_id: number;
+  direction: 'buy' | 'sell';
+  total_car: number | null;
+  posterior_half_life: number | null;
+  entry_window_days: number | null;
+  exit_window_days: number | null;
+  annualized_ir: number | null;
+  decay_quality: string | null;
+  signal_strength_5d: number | null;
+  signal_strength_20d: number | null;
+}
+
+export interface MeanVarianceData {
+  run_date: string;
+  n_assets: number;
+  tickers: string[];
+  max_sharpe: { weights: Record<string, number>; expected_return: number; volatility: number; sharpe_ratio: number };
+  min_variance: { weights: Record<string, number>; expected_return: number; volatility: number };
+  equal_weight: { expected_return: number; volatility: number; sharpe_ratio: number };
+  efficient_frontier: { return: number; volatility: number }[];
+  risk_contribution: Record<string, number>;
+}
+
+export interface EnsembleScoreData {
+  ticker: string;
+  event_id: number;
+  direction: 'buy' | 'sell';
+  total_score: number;
+  confidence: number | null;
+  recommendation: string | null;
+  n_models: number | null;
+  components: Record<string, number>;
+}
+
 export interface TickerAnalysis {
   ticker: string;
   monte_carlo: MonteCarloData | null;
   hmm: HMMData | null;
   garch: GARCHData | null;
   fama_french: FamaFrenchData | null;
+  copula_tail_risk: CopulaTailRiskData | null;
   event_studies: EventStudyData[] | null;
+  bayesian_decay: BayesianDecayData[] | null;
+  ensemble_scores: EnsembleScoreData[] | null;
 }
 
 export interface DashboardData {

@@ -1,4 +1,4 @@
-import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData } from '../types';
+import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData, MeanVarianceData, EnsembleScoreData } from '../types';
 
 const BASE = '/api';
 
@@ -21,5 +21,7 @@ export const api = {
   getTickerAnalysis: (ticker: string) => fetchJson<TickerAnalysis>(`/analysis/${ticker}`),
   getAllHMM: () => fetchJson<HMMData[]>('/analysis/hmm/all'),
   getEventStudySummary: () => fetchJson<any>('/analysis/event-study/summary'),
+  getMeanVariance: () => fetchJson<MeanVarianceData>('/analysis/mean-variance'),
+  getAllEnsembleScores: () => fetchJson<EnsembleScoreData[]>('/analysis/ensemble/all'),
   triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
 };

@@ -1,0 +1,232 @@
+"""
+Ensemble Scoring — Combines all model outputs into a unified signal score.
+
+Aggregates Monte Carlo, HMM, GARCH, Fama-French, Copula, Bayesian Decay,
+and Event Study into a single composite score with component breakdown.
+"""
+
+import numpy as np
+import structlog
+
+logger = structlog.get_logger()
+
+
+class EnsembleScorer:
+    """
+    Weights:
+        monte_carlo  : 0.20  (probability + expected return)
+        hmm_regime   : 0.15  (regime alignment with direction)
+        garch        : 0.10  (volatility environment)
+        fama_french  : 0.10  (alpha + factor alignment)
+        copula_tail  : 0.15  (tail risk penalty)
+        bayesian_decay: 0.15 (signal still active?)
+        event_study  : 0.15  (historical CAR for this pattern)
+    """
+
+    WEIGHTS = {
+        "monte_carlo": 0.20,
+        "hmm_regime": 0.15,
+        "garch": 0.10,
+        "fama_french": 0.10,
+        "copula_tail": 0.15,
+        "bayesian_decay": 0.15,
+        "event_study": 0.15,
+    }
+
+    def score(
+        self,
+        direction: str,
+        monte_carlo: dict | None = None,
+        hmm: dict | None = None,
+        garch: dict | None = None,
+        fama_french: dict | None = None,
+        copula: dict | None = None,
+        bayesian_decay: dict | None = None,
+        event_study: dict | None = None,
+    ) -> dict:
+        """
+        Compute ensemble score 0-100 from all available model outputs.
+
+        Args:
+            direction: 'buy' or 'sell'.
+            Each model param: dict output from the respective analyzer, or None if unavailable.
+
+        Returns:
+            Dict with total score, component scores, confidence, and recommendation.
+        """
+        components = {}
+        available_weight = 0.0
+
+        # --- Monte Carlo (0-100) ---
+        if monte_carlo:
+            mc_score = self._score_monte_carlo(monte_carlo, direction)
+            components["monte_carlo"] = mc_score
+            available_weight += self.WEIGHTS["monte_carlo"]
+
+        # --- HMM Regime (0-100) ---
+        if hmm:
+            hmm_score = self._score_hmm(hmm, direction)
+            components["hmm_regime"] = hmm_score
+            available_weight += self.WEIGHTS["hmm_regime"]
+
+        # --- GARCH (0-100) ---
+        if garch:
+            garch_score = self._score_garch(garch)
+            components["garch"] = garch_score
+            available_weight += self.WEIGHTS["garch"]
+
+        # --- Fama-French (0-100) ---
+        if fama_french:
+            ff_score = self._score_fama_french(fama_french)
+            components["fama_french"] = ff_score
+            available_weight += self.WEIGHTS["fama_french"]
+
+        # --- Copula Tail Risk (0-100, inverted: low tail risk = high score) ---
+        if copula:
+            cop_score = self._score_copula(copula)
+            components["copula_tail"] = cop_score
+            available_weight += self.WEIGHTS["copula_tail"]
+
+        # --- Bayesian Decay (0-100) ---
+        if bayesian_decay:
+            bd_score = self._score_bayesian_decay(bayesian_decay)
+            components["bayesian_decay"] = bd_score
+            available_weight += self.WEIGHTS["bayesian_decay"]
+
+        # --- Event Study (0-100) ---
+        if event_study:
+            es_score = self._score_event_study(event_study, direction)
+            components["event_study"] = es_score
+            available_weight += self.WEIGHTS["event_study"]
+
+        # Weighted average (re-normalize if some models missing)
+        if available_weight == 0:
+            return {"total_score": 0, "components": {}, "confidence": 0, "recommendation": "insufficient_data", "n_models": 0}
+
+        total = 0.0
+        for name, score in components.items():
+            total += score * (self.WEIGHTS[name] / available_weight)
+
+        n_models = len(components)
+        confidence = round(available_weight / sum(self.WEIGHTS.values()), 4)
+
+        # Recommendation
+        if total >= 75:
+            rec = "strong_buy" if direction == "buy" else "strong_sell"
+        elif total >= 55:
+            rec = "buy" if direction == "buy" else "sell"
+        elif total >= 40:
+            rec = "hold"
+        else:
+            rec = "avoid"
+
+        result = {
+            "direction": direction,
+            "total_score": round(total, 1),
+            "components": {k: round(v, 1) for k, v in components.items()},
+            "n_models": n_models,
+            "confidence": confidence,
+            "recommendation": rec,
+        }
+
+        logger.info(
+            "ensemble.scored",
+            direction=direction, total=round(total, 1),
+            n_models=n_models, confidence=confidence, rec=rec,
+        )
+        return result
+
+    # --- Component scorers (each returns 0-100) ---
+
+    def _score_monte_carlo(self, mc: dict, direction: str) -> float:
+        h = mc.get("horizons", {})
+        # Use 30-day horizon if available, else 90
+        horizon = h.get(30) or h.get("30") or h.get(21) or h.get("21") or {}
+        prob = horizon.get("probability_of_profit", 0.5)
+        exp_ret = horizon.get("expected_return", 0)
+
+        if direction == "sell":
+            prob = 1 - prob
+            exp_ret = -exp_ret
+
+        # prob_profit contributes 60pts, expected_return contributes 40pts
+        prob_score = prob * 60
+        ret_score = min(40, max(0, (exp_ret + 0.10) / 0.20 * 40))  # -10% to +10% range
+        return min(100, prob_score + ret_score)
+
+    def _score_hmm(self, hmm: dict, direction: str) -> float:
+        state = hmm.get("current_state", "sideways")
+        probs = {
+            "bull": hmm.get("prob_bull", 0) or 0,
+            "bear": hmm.get("prob_bear", 0) or 0,
+            "sideways": hmm.get("prob_sideways", 0) or 0,
+        }
+        if direction == "buy":
+            return probs["bull"] * 100 + probs["sideways"] * 40
+        else:  # sell
+            return probs["bear"] * 100 + probs["sideways"] * 40
+
+    def _score_garch(self, garch: dict) -> float:
+        # Lower volatility = higher score (more predictable)
+        # Contracting vol = better for entries
+        ratio_5d = garch.get("forecast_5d_ratio") or 1.0
+        ratio_20d = garch.get("forecast_20d_ratio") or 1.0
+        avg_ratio = (ratio_5d + ratio_20d) / 2
+
+        if avg_ratio < 0.8:
+            return 80  # vol contracting significantly
+        elif avg_ratio < 1.0:
+            return 65  # vol mildly contracting
+        elif avg_ratio < 1.2:
+            return 45  # vol mildly expanding
+        else:
+            return 25  # vol expanding significantly
+
+    def _score_fama_french(self, ff: dict) -> float:
+        alpha = ff.get("alpha_annual") or 0
+        # Positive alpha = outperformance
+        alpha_score = min(60, max(0, (alpha + 0.10) / 0.20 * 60))
+
+        r2 = ff.get("r_squared") or 0
+        # Higher R² = model explains stock well = more reliable
+        r2_score = r2 * 40
+
+        return min(100, alpha_score + r2_score)
+
+    def _score_copula(self, copula: dict) -> float:
+        # Invert: low tail risk = high score
+        tail_score = copula.get("tail_risk_score", 50)
+        return max(0, 100 - tail_score)
+
+    def _score_bayesian_decay(self, bd: dict) -> float:
+        quality = bd.get("decay_quality", "no_signal")
+        quality_map = {
+            "slow_decay": 90,
+            "moderate_decay": 70,
+            "fast_decay": 45,
+            "flash": 20,
+            "no_alpha": 10,
+            "no_signal": 5,
+        }
+        base = quality_map.get(quality, 30)
+
+        # Boost if signal still strong at day 5
+        strength_5d = bd.get("signal_strength", {}).get(5, {}).get("remaining_pct", 0)
+        boost = min(10, strength_5d / 10)
+
+        return min(100, base + boost)
+
+    def _score_event_study(self, es: dict, direction: str) -> float:
+        # Can be a single event dict or aggregate
+        car_5d = es.get("car_5d") or es.get("mean_car_5d") or 0
+        car_20d = es.get("car_20d") or es.get("mean_car_20d") or 0
+        is_sig = es.get("is_significant", False)
+
+        # Positive CAR = good signal
+        car_avg = (car_5d + car_20d) / 2
+        car_score = min(70, max(0, (car_avg + 0.05) / 0.10 * 70))
+
+        # Significance bonus
+        sig_bonus = 30 if is_sig else 0
+
+        return min(100, car_score + sig_bonus)
