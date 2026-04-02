@@ -4,6 +4,8 @@ import { MacroGauge } from './MacroGauge';
 import { ExtendedMacro } from './ExtendedMacro';
 import { SignalTable } from './SignalTable';
 import { TickerDetail } from './TickerDetail';
+import { MeanVarianceChart } from './MeanVarianceChart';
+import { PerformancePanel } from './PerformancePanel';
 
 interface Props {
   data: DashboardData;
@@ -75,6 +77,12 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
 
       {/* Extended Macro */}
       {extended_macro && <ExtendedMacro data={extended_macro} />}
+
+      {/* Signal Performance */}
+      <PerformancePanel />
+
+      {/* Portfolio Optimization */}
+      <MeanVarianceChart />
 
       {/* Ticker Analysis Detail Panel */}
       {selectedTicker && (

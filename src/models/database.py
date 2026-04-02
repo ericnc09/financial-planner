@@ -408,6 +408,36 @@ class EnsembleScoreResult(Base):
     )
 
 
+class SignalPerformance(Base):
+    __tablename__ = "signal_performance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(Integer, ForeignKey("smart_money_events.id"), unique=True, nullable=False)
+    ticker = Column(String(10), nullable=False, index=True)
+    direction = Column(String(10), nullable=False)
+    source_type = Column(String(20), nullable=True)
+    conviction = Column(Float, nullable=True)
+
+    entry_price = Column(Float, nullable=True)
+    entry_date = Column(DateTime, nullable=True)
+
+    price_5d = Column(Float, nullable=True)
+    price_10d = Column(Float, nullable=True)
+    price_20d = Column(Float, nullable=True)
+    price_60d = Column(Float, nullable=True)
+
+    return_5d = Column(Float, nullable=True)
+    return_10d = Column(Float, nullable=True)
+    return_20d = Column(Float, nullable=True)
+    return_60d = Column(Float, nullable=True)
+
+    is_winner_5d = Column(Boolean, nullable=True)
+    is_winner_20d = Column(Boolean, nullable=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ExtendedMacroData(Base):
     __tablename__ = "extended_macro_data"
 

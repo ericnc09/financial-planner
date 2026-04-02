@@ -27,7 +27,17 @@ export const SignalTable: React.FC<Props> = ({ signals, onTickerClick }) => {
   return (
     <div style={{ background: '#161b22', borderRadius: 12, padding: 20, border: '1px solid #30363d' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 style={{ fontSize: 14, color: '#c9d1d9' }}>Smart Money Signals</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h3 style={{ fontSize: 14, color: '#c9d1d9', margin: 0 }}>Smart Money Signals</h3>
+          <a href="/api/export/signals?format=csv&days=30" download style={{
+            fontSize: 10, color: '#8b949e', textDecoration: 'none', padding: '2px 8px',
+            border: '1px solid #30363d', borderRadius: 4, background: '#21262d',
+          }}>CSV</a>
+          <a href="/api/export/signals?format=json&days=30" download style={{
+            fontSize: 10, color: '#8b949e', textDecoration: 'none', padding: '2px 8px',
+            border: '1px solid #30363d', borderRadius: 4, background: '#21262d',
+          }}>JSON</a>
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {['all', 'congressional', 'insider'].map(f => (
             <button key={f} onClick={() => setSourceFilter(f)} style={{

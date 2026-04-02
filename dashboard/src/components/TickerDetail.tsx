@@ -41,10 +41,16 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
         <h2 style={{ fontSize: 18, fontWeight: 700, color: '#e1e4e8', margin: 0 }}>
           Analysis: {ticker}
         </h2>
-        <button onClick={onClose} style={{
-          background: '#21262d', border: '1px solid #30363d', borderRadius: 6,
-          color: '#c9d1d9', cursor: 'pointer', padding: '4px 12px', fontSize: 12,
-        }}>Close</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a href={`/api/export/analysis/${ticker}?format=csv`} download style={{
+            background: '#21262d', border: '1px solid #30363d', borderRadius: 6,
+            color: '#8b949e', textDecoration: 'none', padding: '4px 12px', fontSize: 12, lineHeight: '20px',
+          }}>Export CSV</a>
+          <button onClick={onClose} style={{
+            background: '#21262d', border: '1px solid #30363d', borderRadius: 6,
+            color: '#c9d1d9', cursor: 'pointer', padding: '4px 12px', fontSize: 12,
+          }}>Close</button>
+        </div>
       </div>
 
       {loading && <div style={{ color: '#8b949e', fontSize: 13 }}>Loading analysis...</div>}

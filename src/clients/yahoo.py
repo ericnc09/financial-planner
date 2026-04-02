@@ -43,9 +43,96 @@ class YahooClient:
         df = t.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
         return df if not df.empty else None
 
-    async def get_sector_tickers(self, sector: str) -> list[str]:
-        """Placeholder — returns empty list. Could be expanded with yfinance screener."""
-        return []
+    async def enrich_ticker(self, ticker: str):
+        """Enrich a ticker using yfinance — free, no rate limits."""
+        from src.models.schemas import EnrichmentSchema
+        try:
+            info, hist = await asyncio.to_thread(self._fetch_enrichment, ticker)
+            if hist is None or hist.empty:
+                return None
+
+            closes = hist["Close"].values.astype(float)
+            volumes = hist["Volume"].values.astype(float)
+
+            current_price = float(closes[-1]) if len(closes) > 0 else None
+
+            # Momentum
+            momentum_30d = None
+            if len(closes) >= 22:
+                momentum_30d = (closes[-1] - closes[-22]) / closes[-22]
+            momentum_90d = None
+            if len(closes) >= 63:
+                momentum_90d = (closes[-1] - closes[-63]) / closes[-63]
+
+            # RSI-14
+            rsi = self._compute_rsi(closes)
+
+            # Drawdown from 52-week high
+            drawdown = None
+            if len(closes) > 0:
+                high_52w = float(np.max(closes))
+                if high_52w > 0 and current_price:
+                    drawdown = (high_52w - current_price) / high_52w
+
+            # Average volume 30d
+            avg_vol = float(np.mean(volumes[-30:])) if len(volumes) >= 30 else (
+                float(np.mean(volumes)) if len(volumes) > 0 else None
+            )
+
+            # Fundamentals from yfinance .info
+            pe_ratio = info.get("trailingPE") or info.get("forwardPE")
+            market_cap = info.get("marketCap")
+            eps_latest = info.get("trailingEps")
+            sector = info.get("sector")
+
+            # Revenue/EPS growth
+            revenue_growth = info.get("revenueGrowth")
+            earnings_growth = info.get("earningsGrowth")
+
+            return EnrichmentSchema(
+                pe_ratio=pe_ratio,
+                market_cap=market_cap,
+                revenue_growth_yoy=revenue_growth,
+                eps_latest=eps_latest,
+                eps_growth_yoy=earnings_growth,
+                price_at_signal=current_price,
+                momentum_30d=momentum_30d,
+                momentum_90d=momentum_90d,
+                rsi_14d=rsi,
+                drawdown_from_52w_high=drawdown,
+                avg_volume_30d=avg_vol,
+                sector=sector,
+            )
+        except Exception as e:
+            logger.warning("yahoo.enrich_failed", ticker=ticker, error=str(e))
+            return None
+
+    def _fetch_enrichment(self, ticker: str, days: int = 400):
+        """Synchronous fetch of info + history for enrichment."""
+        t = yf.Ticker(ticker)
+        try:
+            info = t.info or {}
+        except Exception:
+            info = {}
+        end = datetime.now()
+        start = end - timedelta(days=days)
+        hist = t.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
+        return info, hist if not hist.empty else (info, None)
+
+    @staticmethod
+    def _compute_rsi(closes: np.ndarray, period: int = 14) -> float | None:
+        if len(closes) < period + 1:
+            return None
+        deltas = np.diff(closes)
+        recent = deltas[-period:]
+        gains = np.where(recent > 0, recent, 0)
+        losses = np.where(recent < 0, -recent, 0)
+        avg_gain = float(np.mean(gains))
+        avg_loss = float(np.mean(losses))
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(100.0 - (100.0 / (1.0 + rs)), 2)
 
     async def close(self):
         pass

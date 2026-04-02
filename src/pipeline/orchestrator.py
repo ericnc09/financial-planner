@@ -229,7 +229,11 @@ class Orchestrator:
 
         for ticker in unique_tickers:
             try:
-                enrichment = await self.tiingo.enrich_ticker(ticker)
+                # Use yfinance (free, no rate limits) instead of Tiingo
+                enrichment = await self.yahoo.enrich_ticker(ticker)
+                if enrichment is None:
+                    # Fallback to Tiingo if yfinance fails
+                    enrichment = await self.tiingo.enrich_ticker(ticker)
                 ticker_cache[ticker] = enrichment
                 logger.info("orchestrator.enriched_ticker", ticker=ticker)
             except Exception as e:

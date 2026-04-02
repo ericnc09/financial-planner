@@ -23,6 +23,7 @@ from src.models.database import (
     MacroSnapshot,
     MeanVarianceResult,
     MonteCarloResult,
+    SignalPerformance,
     SmartMoneyEvent,
     SourceType,
     get_session_factory,
@@ -222,6 +223,21 @@ class TickerAnalysisResponse(BaseModel):
     event_studies: list[EventStudyResponse] | None = None
     bayesian_decay: list[BayesianDecayResponse] | None = None
     ensemble_scores: list[EnsembleScoreResponse] | None = None
+
+
+class PerformanceSummaryResponse(BaseModel):
+    total_signals: int
+    tracked_signals: int
+    win_rate_5d: float | None = None
+    win_rate_20d: float | None = None
+    avg_return_5d: float | None = None
+    avg_return_20d: float | None = None
+    avg_return_60d: float | None = None
+    by_direction: dict | None = None
+    by_source: dict | None = None
+    by_conviction_bucket: dict | None = None
+    top_winners: list[dict] = []
+    top_losers: list[dict] = []
 
 
 class DashboardResponse(BaseModel):
@@ -779,6 +795,184 @@ def get_all_ensemble_scores():
         ) for e in rows]
     finally:
         session.close()
+
+
+@app.get("/api/performance/summary", response_model=PerformanceSummaryResponse)
+def get_performance_summary():
+    """Get aggregate performance statistics across all tracked signals."""
+    import numpy as np
+    session = app.state.session_factory()
+    try:
+        total_events = session.query(SmartMoneyEvent).count()
+        rows = session.query(SignalPerformance).all()
+
+        if not rows:
+            return PerformanceSummaryResponse(total_signals=total_events, tracked_signals=0)
+
+        def _agg(subset, label=""):
+            r5 = [r.return_5d for r in subset if r.return_5d is not None]
+            r20 = [r.return_20d for r in subset if r.return_20d is not None]
+            r60 = [r.return_60d for r in subset if r.return_60d is not None]
+            w5 = [r.is_winner_5d for r in subset if r.is_winner_5d is not None]
+            w20 = [r.is_winner_20d for r in subset if r.is_winner_20d is not None]
+            return {
+                "n": len(subset),
+                "win_rate_5d": round(sum(w5) / len(w5), 4) if w5 else None,
+                "win_rate_20d": round(sum(w20) / len(w20), 4) if w20 else None,
+                "avg_return_5d": round(float(np.mean(r5)), 6) if r5 else None,
+                "avg_return_20d": round(float(np.mean(r20)), 6) if r20 else None,
+                "avg_return_60d": round(float(np.mean(r60)), 6) if r60 else None,
+            }
+
+        overall = _agg(rows)
+
+        # By direction
+        by_dir = {}
+        for d in ["buy", "sell"]:
+            sub = [r for r in rows if r.direction == d]
+            if sub:
+                by_dir[d] = _agg(sub)
+
+        # By source
+        by_src = {}
+        for s in ["insider", "congressional"]:
+            sub = [r for r in rows if r.source_type == s]
+            if sub:
+                by_src[s] = _agg(sub)
+
+        # By conviction bucket
+        by_conv = {}
+        for label, lo, hi in [("low", 0, 0.4), ("medium", 0.4, 0.6), ("high", 0.6, 1.01)]:
+            sub = [r for r in rows if r.conviction is not None and lo <= r.conviction < hi]
+            if sub:
+                by_conv[label] = _agg(sub)
+
+        # Top winners/losers by 20d return
+        with_20d = [r for r in rows if r.return_20d is not None]
+        sorted_by_ret = sorted(with_20d, key=lambda r: r.return_20d, reverse=True)
+        top_winners = [{"ticker": r.ticker, "direction": r.direction, "return_20d": round(r.return_20d, 4),
+                        "conviction": round(r.conviction, 4) if r.conviction else None}
+                       for r in sorted_by_ret[:5]]
+        top_losers = [{"ticker": r.ticker, "direction": r.direction, "return_20d": round(r.return_20d, 4),
+                       "conviction": round(r.conviction, 4) if r.conviction else None}
+                      for r in sorted_by_ret[-5:]]
+
+        return PerformanceSummaryResponse(
+            total_signals=total_events,
+            tracked_signals=len(rows),
+            win_rate_5d=overall.get("win_rate_5d"),
+            win_rate_20d=overall.get("win_rate_20d"),
+            avg_return_5d=overall.get("avg_return_5d"),
+            avg_return_20d=overall.get("avg_return_20d"),
+            avg_return_60d=overall.get("avg_return_60d"),
+            by_direction=by_dir,
+            by_source=by_src,
+            by_conviction_bucket=by_conv,
+            top_winners=top_winners,
+            top_losers=top_losers,
+        )
+    finally:
+        session.close()
+
+
+@app.post("/api/performance/update")
+async def trigger_performance_update():
+    """Update performance tracking for all signals."""
+    from src.tracking.performance import PerformanceTracker
+    tracker = PerformanceTracker(app.state.session_factory)
+    asyncio.create_task(tracker.update_performance())
+    return {"status": "started"}
+
+
+@app.get("/api/export/signals")
+def export_signals(
+    days: int = Query(default=30, ge=1, le=365),
+    format: str = Query(default="csv"),
+):
+    """Export signals as CSV or JSON."""
+    from fastapi.responses import Response
+    import csv
+    import io
+
+    signals = get_signals(days=days, source=None, min_conviction=None)
+
+    if format == "json":
+        import json
+        content = json.dumps([s.dict() for s in signals], indent=2, default=str)
+        return Response(content=content, media_type="application/json",
+                       headers={"Content-Disposition": "attachment; filename=signals.json"})
+
+    # CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "ticker", "actor", "direction", "size_estimate", "trade_date",
+                     "source_type", "conviction", "passes_threshold", "sector", "price_at_signal"])
+    for s in signals:
+        writer.writerow([s.id, s.ticker, s.actor, s.direction, s.size_estimate,
+                        s.trade_date, s.source_type, s.conviction, s.passes_threshold,
+                        s.sector, s.price_at_signal])
+    return Response(content=output.getvalue(), media_type="text/csv",
+                   headers={"Content-Disposition": "attachment; filename=signals.csv"})
+
+
+@app.get("/api/export/analysis/{ticker}")
+def export_analysis(ticker: str, format: str = Query(default="csv")):
+    """Export all analysis data for a ticker as CSV or JSON."""
+    from fastapi.responses import Response
+    import csv
+    import io
+    import json as _json
+
+    data = get_ticker_analysis(ticker)
+
+    if format == "json":
+        content = _json.dumps(data.dict(), indent=2, default=str)
+        return Response(content=content, media_type="application/json",
+                       headers={"Content-Disposition": f"attachment; filename={ticker}_analysis.json"})
+
+    # CSV — flatten key metrics from all models into one row per model
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["model", "metric", "value"])
+
+    if data.monte_carlo:
+        mc = data.monte_carlo
+        for k in ["current_price", "annual_drift", "annual_volatility"]:
+            writer.writerow(["monte_carlo", k, getattr(mc, k, None)])
+        for horizon, vals in mc.horizons.items():
+            for mk, mv in vals.items():
+                if isinstance(mv, dict):
+                    for pk, pv in mv.items():
+                        writer.writerow(["monte_carlo", f"h{horizon}_{mk}_{pk}", pv])
+                else:
+                    writer.writerow(["monte_carlo", f"h{horizon}_{mk}", mv])
+
+    if data.hmm:
+        for k in ["current_state", "prob_bull", "prob_bear", "prob_sideways"]:
+            writer.writerow(["hmm", k, getattr(data.hmm, k, None)])
+
+    if data.garch:
+        for k in ["persistence", "current_vol_annual", "long_run_vol_annual",
+                   "forecast_5d_vol", "forecast_5d_ratio", "forecast_20d_vol", "forecast_20d_ratio"]:
+            writer.writerow(["garch", k, getattr(data.garch, k, None)])
+
+    if data.fama_french:
+        for k in ["alpha_annual", "beta_market", "beta_smb", "beta_hml", "beta_rmw", "beta_cma", "r_squared"]:
+            writer.writerow(["fama_french", k, getattr(data.fama_french, k, None)])
+
+    if data.copula_tail_risk:
+        for k in ["tail_risk_score", "var_95", "cvar_95", "tail_dep_lower", "tail_dep_ratio"]:
+            writer.writerow(["copula", k, getattr(data.copula_tail_risk, k, None)])
+
+    if data.ensemble_scores:
+        for es in data.ensemble_scores:
+            writer.writerow(["ensemble", "total_score", es.total_score])
+            writer.writerow(["ensemble", "recommendation", es.recommendation])
+            for ck, cv in es.components.items():
+                writer.writerow(["ensemble", f"component_{ck}", cv])
+
+    return Response(content=output.getvalue(), media_type="text/csv",
+                   headers={"Content-Disposition": f"attachment; filename={ticker}_analysis.csv"})
 
 
 @app.post("/api/pipeline/run")
