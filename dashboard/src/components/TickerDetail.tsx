@@ -3,6 +3,7 @@ import type { TickerAnalysis } from '../types';
 import { api } from '../api/client';
 import { MonteCarloChart } from './MonteCarloChart';
 import { VolatilityForecast } from './VolatilityForecast';
+import { EventStudyChart } from './EventStudyChart';
 import { FactorExposure } from './FactorExposure';
 
 interface Props {
@@ -39,7 +40,7 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
 
       {loading && <div style={{ color: '#8b949e', fontSize: 13 }}>Loading analysis...</div>}
 
-      {!loading && !data?.monte_carlo && !data?.hmm && !data?.garch && !data?.fama_french && (
+      {!loading && !data?.monte_carlo && !data?.hmm && !data?.garch && !data?.fama_french && !data?.event_studies?.length && (
         <div style={{ color: '#8b949e', fontSize: 13 }}>
           No analysis data yet. Run the pipeline to generate model results.
         </div>
@@ -80,6 +81,9 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
             </div>
           )}
           {data.fama_french && <FactorExposure data={data.fama_french} />}
+          {data.event_studies && data.event_studies.length > 0 && (
+            <EventStudyChart events={data.event_studies} />
+          )}
         </div>
       )}
     </div>

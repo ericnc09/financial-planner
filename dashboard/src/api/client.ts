@@ -20,5 +20,6 @@ export const api = {
   getExtendedMacro: () => fetchJson<ExtendedMacroData>('/macro/extended'),
   getTickerAnalysis: (ticker: string) => fetchJson<TickerAnalysis>(`/analysis/${ticker}`),
   getAllHMM: () => fetchJson<HMMData[]>('/analysis/hmm/all'),
+  getEventStudySummary: () => fetchJson<any>('/analysis/event-study/summary'),
   triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
 };

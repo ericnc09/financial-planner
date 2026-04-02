@@ -6,6 +6,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import Settings
+from src.analysis.event_study import EventStudyAnalyzer
 from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.hmm_regime import HMMRegimeDetector
 from src.analysis.monte_carlo import MonteCarloSimulator
@@ -19,6 +20,7 @@ from src.models.database import (
     ConvictionScore,
     Direction,
     Enrichment,
+    EventStudyResult,
     ExtendedMacroData,
     FamaFrenchExposure,
     GARCHForecast,
@@ -53,6 +55,7 @@ class Orchestrator:
         self.monte_carlo: MonteCarloSimulator | None = None
         self.hmm: HMMRegimeDetector | None = None
         self.garch: GARCHForecaster | None = None
+        self.event_study: EventStudyAnalyzer | None = None
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
@@ -76,6 +79,7 @@ class Orchestrator:
         self.monte_carlo = MonteCarloSimulator(n_simulations=10_000)
         self.hmm = HMMRegimeDetector()
         self.garch = GARCHForecaster()
+        self.event_study = EventStudyAnalyzer()
 
         # Scoring
         signal_scorer = SignalScorer()
@@ -125,6 +129,9 @@ class Orchestrator:
         # --- Step 3c: ANALYSIS MODELS (Monte Carlo, HMM, GARCH, Fama-French) ---
         unique_tickers = list({schema.ticker for _, schema in new_events})
         await self._run_analysis_models(unique_tickers)
+
+        # --- Step 3d: EVENT STUDY ---
+        await self._run_event_studies(new_events)
 
         # --- Step 4: SCORE ---
         scored = []
@@ -447,6 +454,112 @@ class Orchestrator:
                 r_squared=result["r_squared"],
             )
             session.add(ff)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    async def _run_event_studies(self, new_events: list):
+        """Run event study analysis on each new event."""
+        import json
+        import numpy as np
+
+        logger.info("orchestrator.event_study_start", events=len(new_events))
+        run_date = datetime.utcnow()
+
+        # Pre-load Fama-French factors for market returns
+        ff_factors = await self.fama_french.get_factors(days=504)
+        if ff_factors is None:
+            logger.warning("orchestrator.event_study_no_factors")
+            return
+
+        market_returns = ff_factors["Mkt-RF"].values
+
+        # Cache price data per ticker
+        ticker_price_cache: dict[str, dict] = {}
+        results = []
+
+        for event_id, event_schema in new_events:
+            try:
+                ticker = event_schema.ticker
+
+                # Fetch price data (cached per ticker)
+                if ticker not in ticker_price_cache:
+                    price_data = await self.yahoo.get_price_history(ticker, days=504)
+                    ticker_price_cache[ticker] = price_data
+
+                price_data = ticker_price_cache[ticker]
+                if price_data is None:
+                    continue
+
+                price_dates = price_data["dates"]
+                price_returns = price_data["returns"]
+
+                # Align market returns to the same length
+                n = min(len(price_returns), len(market_returns))
+                aligned_market = market_returns[-n:]
+                aligned_stock = price_returns[-n:]
+                aligned_dates = price_dates[-(n + 1):]  # dates are 1 longer than returns
+
+                result = self.event_study.analyze_event(
+                    ticker=ticker,
+                    event_date=event_schema.trade_date,
+                    direction=event_schema.direction.value,
+                    price_dates=aligned_dates,
+                    price_returns=aligned_stock,
+                    market_returns=aligned_market,
+                )
+
+                if result:
+                    result["event_id"] = event_id
+                    result["source_type"] = event_schema.source_type.value
+                    self._persist_event_study(result, run_date)
+                    results.append(result)
+
+            except Exception as e:
+                logger.warning(
+                    "orchestrator.event_study_failed",
+                    ticker=event_schema.ticker,
+                    error=str(e),
+                )
+
+        if results:
+            aggregate = self.event_study.aggregate_results(results)
+            logger.info(
+                "orchestrator.event_study_done",
+                n_analyzed=len(results),
+                mean_car_5d=aggregate.get("overall", {}).get("car_5d", {}).get("mean"),
+                mean_car_20d=aggregate.get("overall", {}).get("car_20d", {}).get("mean"),
+            )
+        else:
+            logger.info("orchestrator.event_study_no_results")
+
+    def _persist_event_study(self, result: dict, run_date: datetime):
+        import json
+
+        session = self.session_factory()
+        try:
+            es = EventStudyResult(
+                ticker=result["ticker"],
+                event_id=result["event_id"],
+                run_date=run_date,
+                direction=result["direction"],
+                source_type=result.get("source_type"),
+                car_1d=result["car_1d"],
+                car_5d=result["car_5d"],
+                car_10d=result["car_10d"],
+                car_20d=result["car_20d"],
+                t_statistic=result["t_statistic"],
+                p_value=result["p_value"],
+                is_significant=result["is_significant"],
+                alpha=result["alpha"],
+                beta=result["beta"],
+                sigma_est=result["sigma_est"],
+                n_estimation=result["n_estimation"],
+                daily_cars=json.dumps(result["daily_cars"]),
+            )
+            session.add(es)
             session.commit()
         except IntegrityError:
             session.rollback()

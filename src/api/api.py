@@ -12,6 +12,7 @@ from config.settings import Settings
 from src.models.database import (
     ConvictionScore,
     Enrichment,
+    EventStudyResult,
     ExtendedMacroData,
     FamaFrenchExposure,
     GARCHForecast,
@@ -119,12 +120,46 @@ class ExtendedMacroResponse(BaseModel):
     put_call_ratio: float | None = None
 
 
+class EventStudyResponse(BaseModel):
+    ticker: str
+    event_id: int
+    direction: str
+    source_type: str | None = None
+    car_1d: float | None = None
+    car_5d: float | None = None
+    car_10d: float | None = None
+    car_20d: float | None = None
+    t_statistic: float | None = None
+    p_value: float | None = None
+    is_significant: bool | None = None
+    daily_cars: list[float] = []
+
+
+class EventStudyAggregateResponse(BaseModel):
+    n_events: int
+    n_significant: int | None = None
+    pct_significant: float | None = None
+    mean_car_1d: float | None = None
+    mean_car_5d: float | None = None
+    mean_car_10d: float | None = None
+    mean_car_20d: float | None = None
+    t_stat_5d: float | None = None
+    p_value_5d: float | None = None
+    win_rate_5d: float | None = None
+    t_stat_20d: float | None = None
+    p_value_20d: float | None = None
+    win_rate_20d: float | None = None
+    by_direction: dict | None = None
+    by_source: dict | None = None
+
+
 class TickerAnalysisResponse(BaseModel):
     ticker: str
     monte_carlo: MonteCarloResponse | None = None
     hmm: HMMResponse | None = None
     garch: GARCHResponse | None = None
     fama_french: FamaFrenchResponse | None = None
+    event_studies: list[EventStudyResponse] | None = None
 
 
 class DashboardResponse(BaseModel):
@@ -400,12 +435,44 @@ def get_ticker_analysis(ticker: str):
                 r_squared=ff.r_squared,
             )
 
+        # Event studies for this ticker
+        es_rows = session.query(EventStudyResult).filter(
+            EventStudyResult.ticker == ticker
+        ).order_by(desc(EventStudyResult.run_date)).limit(20).all()
+
+        es_resp = None
+        if es_rows:
+            import json
+            es_resp = []
+            for es in es_rows:
+                daily = []
+                if es.daily_cars:
+                    try:
+                        daily = json.loads(es.daily_cars)
+                    except Exception:
+                        pass
+                es_resp.append(EventStudyResponse(
+                    ticker=es.ticker,
+                    event_id=es.event_id,
+                    direction=es.direction,
+                    source_type=es.source_type,
+                    car_1d=es.car_1d,
+                    car_5d=es.car_5d,
+                    car_10d=es.car_10d,
+                    car_20d=es.car_20d,
+                    t_statistic=es.t_statistic,
+                    p_value=es.p_value,
+                    is_significant=es.is_significant,
+                    daily_cars=daily,
+                ))
+
         return TickerAnalysisResponse(
             ticker=ticker,
             monte_carlo=mc_resp,
             hmm=hmm_resp,
             garch=garch_resp,
             fama_french=ff_resp,
+            event_studies=es_resp,
         )
     finally:
         session.close()
@@ -457,6 +524,83 @@ def get_extended_macro():
             housing_starts=em.housing_starts,
             industrial_production=em.industrial_production,
             put_call_ratio=em.put_call_ratio,
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/analysis/event-study/summary", response_model=EventStudyAggregateResponse)
+def get_event_study_summary():
+    """Aggregate event study statistics across all events."""
+    import json
+    import numpy as np
+    from scipy import stats as sp_stats
+
+    session = app.state.session_factory()
+    try:
+        rows = session.query(EventStudyResult).all()
+        if not rows:
+            return EventStudyAggregateResponse(n_events=0)
+
+        def _agg_horizon(values: list[float]) -> dict:
+            if len(values) < 2:
+                return {"mean": values[0] if values else None, "t_stat": None, "p_value": None, "win_rate": None}
+            arr = np.array(values)
+            mean = float(np.mean(arr))
+            se = float(np.std(arr, ddof=1) / np.sqrt(len(arr)))
+            t = mean / se if se > 0 else 0
+            p = float(2 * (1 - sp_stats.t.cdf(abs(t), df=len(arr) - 1)))
+            return {"mean": round(mean, 6), "t_stat": round(t, 4), "p_value": round(p, 4), "win_rate": round(float(np.mean(arr > 0)), 4)}
+
+        cars_1d = [r.car_1d for r in rows if r.car_1d is not None]
+        cars_5d = [r.car_5d for r in rows if r.car_5d is not None]
+        cars_10d = [r.car_10d for r in rows if r.car_10d is not None]
+        cars_20d = [r.car_20d for r in rows if r.car_20d is not None]
+
+        agg_5d = _agg_horizon(cars_5d)
+        agg_20d = _agg_horizon(cars_20d)
+        sig_count = sum(1 for r in rows if r.is_significant)
+
+        # By direction
+        by_dir = {}
+        for d in ["buy", "sell"]:
+            sub = [r for r in rows if r.direction == d]
+            sub_5d = [r.car_5d for r in sub if r.car_5d is not None]
+            sub_20d = [r.car_20d for r in sub if r.car_20d is not None]
+            by_dir[d] = {
+                "n": len(sub),
+                "car_5d": _agg_horizon(sub_5d),
+                "car_20d": _agg_horizon(sub_20d),
+            }
+
+        # By source
+        by_src = {}
+        for s in ["insider", "congressional"]:
+            sub = [r for r in rows if r.source_type == s]
+            sub_5d = [r.car_5d for r in sub if r.car_5d is not None]
+            sub_20d = [r.car_20d for r in sub if r.car_20d is not None]
+            by_src[s] = {
+                "n": len(sub),
+                "car_5d": _agg_horizon(sub_5d),
+                "car_20d": _agg_horizon(sub_20d),
+            }
+
+        return EventStudyAggregateResponse(
+            n_events=len(rows),
+            n_significant=sig_count,
+            pct_significant=round(sig_count / len(rows), 4) if rows else None,
+            mean_car_1d=_agg_horizon(cars_1d).get("mean"),
+            mean_car_5d=agg_5d.get("mean"),
+            mean_car_10d=_agg_horizon(cars_10d).get("mean"),
+            mean_car_20d=agg_20d.get("mean"),
+            t_stat_5d=agg_5d.get("t_stat"),
+            p_value_5d=agg_5d.get("p_value"),
+            win_rate_5d=agg_5d.get("win_rate"),
+            t_stat_20d=agg_20d.get("t_stat"),
+            p_value_20d=agg_20d.get("p_value"),
+            win_rate_20d=agg_20d.get("win_rate"),
+            by_direction=by_dir,
+            by_source=by_src,
         )
     finally:
         session.close()

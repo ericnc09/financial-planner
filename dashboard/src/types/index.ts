@@ -92,12 +92,28 @@ export interface FamaFrenchData {
   r_squared: number | null;
 }
 
+export interface EventStudyData {
+  ticker: string;
+  event_id: number;
+  direction: 'buy' | 'sell';
+  source_type: 'insider' | 'congressional' | null;
+  car_1d: number | null;
+  car_5d: number | null;
+  car_10d: number | null;
+  car_20d: number | null;
+  t_statistic: number | null;
+  p_value: number | null;
+  is_significant: boolean | null;
+  daily_cars: number[];
+}
+
 export interface TickerAnalysis {
   ticker: string;
   monte_carlo: MonteCarloData | null;
   hmm: HMMData | null;
   garch: GARCHData | null;
   fama_french: FamaFrenchData | null;
+  event_studies: EventStudyData[] | null;
 }
 
 export interface DashboardData {

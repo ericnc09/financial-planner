@@ -254,6 +254,40 @@ class FamaFrenchExposure(Base):
     )
 
 
+class EventStudyResult(Base):
+    __tablename__ = "event_study_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    event_id = Column(Integer, ForeignKey("smart_money_events.id"), nullable=False)
+    run_date = Column(DateTime, nullable=False)
+
+    direction = Column(String(10), nullable=False)
+    source_type = Column(String(20), nullable=True)
+
+    car_1d = Column(Float, nullable=True)
+    car_5d = Column(Float, nullable=True)
+    car_10d = Column(Float, nullable=True)
+    car_20d = Column(Float, nullable=True)
+
+    t_statistic = Column(Float, nullable=True)
+    p_value = Column(Float, nullable=True)
+    is_significant = Column(Boolean, nullable=True)
+
+    alpha = Column(Float, nullable=True)
+    beta = Column(Float, nullable=True)
+    sigma_est = Column(Float, nullable=True)
+    n_estimation = Column(Integer, nullable=True)
+
+    daily_cars = Column(Text, nullable=True)  # JSON array of day-by-day CAR values
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "run_date", name="uq_es_event_date"),
+    )
+
+
 class ExtendedMacroData(Base):
     __tablename__ = "extended_macro_data"
 
