@@ -23,6 +23,7 @@ from src.models.database import (
     MacroSnapshot,
     MeanVarianceResult,
     MonteCarloResult,
+    OptionsFlow,
     SignalPerformance,
     SmartMoneyEvent,
     SourceType,
@@ -213,6 +214,20 @@ class EnsembleScoreResponse(BaseModel):
     components: dict
 
 
+class OptionsFlowResponse(BaseModel):
+    ticker: str
+    analysis_date: datetime
+    pcr: float | None = None
+    unusual_volume_score: float | None = None
+    iv_skew: float | None = None
+    max_pain: float | None = None
+    nearest_expiry: str | None = None
+    total_call_volume: int | None = None
+    total_put_volume: int | None = None
+    total_call_oi: int | None = None
+    total_put_oi: int | None = None
+
+
 class TickerAnalysisResponse(BaseModel):
     ticker: str
     monte_carlo: MonteCarloResponse | None = None
@@ -223,6 +238,7 @@ class TickerAnalysisResponse(BaseModel):
     event_studies: list[EventStudyResponse] | None = None
     bayesian_decay: list[BayesianDecayResponse] | None = None
     ensemble_scores: list[EnsembleScoreResponse] | None = None
+    options_flow: OptionsFlowResponse | None = None
 
 
 class PerformanceSummaryResponse(BaseModel):
@@ -238,6 +254,32 @@ class PerformanceSummaryResponse(BaseModel):
     by_conviction_bucket: dict | None = None
     top_winners: list[dict] = []
     top_losers: list[dict] = []
+
+
+class BacktestRequest(BaseModel):
+    start_date: str   # YYYY-MM-DD
+    end_date: str     # YYYY-MM-DD
+    conviction_threshold: float = 0.6
+
+
+class PeriodMetricsResponse(BaseModel):
+    hold_days: int
+    total_trades: int
+    win_rate: float
+    avg_return: float
+    sharpe_ratio: float
+    sortino_ratio: float
+    profit_factor: float
+    max_drawdown: float
+
+
+class BacktestResponse(BaseModel):
+    date_range: list[str]
+    total_signals: int
+    filtered_signals: int
+    conviction_threshold: float
+    filtered_metrics: dict[str, PeriodMetricsResponse]
+    unfiltered_metrics: dict[str, PeriodMetricsResponse]
 
 
 class DashboardResponse(BaseModel):
@@ -592,6 +634,22 @@ def get_ticker_analysis(ticker: str):
                 },
             ) for e in ens_rows]
 
+        # Options Flow
+        opts_row = session.query(OptionsFlow).filter(
+            OptionsFlow.ticker == ticker
+        ).order_by(desc(OptionsFlow.analysis_date)).first()
+
+        opts_resp = None
+        if opts_row:
+            opts_resp = OptionsFlowResponse(
+                ticker=opts_row.ticker, analysis_date=opts_row.analysis_date,
+                pcr=opts_row.pcr, unusual_volume_score=opts_row.unusual_volume_score,
+                iv_skew=opts_row.iv_skew, max_pain=opts_row.max_pain,
+                nearest_expiry=opts_row.nearest_expiry,
+                total_call_volume=opts_row.total_call_volume, total_put_volume=opts_row.total_put_volume,
+                total_call_oi=opts_row.total_call_oi, total_put_oi=opts_row.total_put_oi,
+            )
+
         return TickerAnalysisResponse(
             ticker=ticker,
             monte_carlo=mc_resp,
@@ -602,6 +660,30 @@ def get_ticker_analysis(ticker: str):
             event_studies=es_resp,
             bayesian_decay=bd_resp,
             ensemble_scores=ens_resp,
+            options_flow=opts_resp,
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/analysis/{ticker}/options", response_model=OptionsFlowResponse | None)
+def get_options_flow(ticker: str):
+    """Get latest options flow analysis for a ticker."""
+    ticker = ticker.upper()
+    session = app.state.session_factory()
+    try:
+        row = session.query(OptionsFlow).filter(
+            OptionsFlow.ticker == ticker
+        ).order_by(desc(OptionsFlow.analysis_date)).first()
+        if not row:
+            return None
+        return OptionsFlowResponse(
+            ticker=row.ticker, analysis_date=row.analysis_date,
+            pcr=row.pcr, unusual_volume_score=row.unusual_volume_score,
+            iv_skew=row.iv_skew, max_pain=row.max_pain,
+            nearest_expiry=row.nearest_expiry,
+            total_call_volume=row.total_call_volume, total_put_volume=row.total_put_volume,
+            total_call_oi=row.total_call_oi, total_put_oi=row.total_put_oi,
         )
     finally:
         session.close()
@@ -973,6 +1055,42 @@ def export_analysis(ticker: str, format: str = Query(default="csv")):
 
     return Response(content=output.getvalue(), media_type="text/csv",
                    headers={"Content-Disposition": f"attachment; filename={ticker}_analysis.csv"})
+
+
+@app.post("/api/backtest", response_model=BacktestResponse)
+async def run_backtest(req: BacktestRequest):
+    from src.backtesting.backtester import Backtester
+    from src.clients.yahoo import YahooClient
+
+    yahoo = YahooClient()
+    bt = Backtester(app.state.settings, yahoo)
+    result = await bt.run(req.start_date, req.end_date, req.conviction_threshold)
+
+    def _metrics_to_response(m):
+        from src.backtesting.backtester import PeriodMetrics
+        return PeriodMetricsResponse(
+            hold_days=m.hold_days,
+            total_trades=m.total_trades,
+            win_rate=m.win_rate,
+            avg_return=m.avg_return,
+            sharpe_ratio=m.sharpe_ratio,
+            sortino_ratio=m.sortino_ratio,
+            profit_factor=m.profit_factor,
+            max_drawdown=m.max_drawdown,
+        )
+
+    return BacktestResponse(
+        date_range=list(result.date_range),
+        total_signals=result.total_signals,
+        filtered_signals=result.filtered_signals,
+        conviction_threshold=result.conviction_threshold,
+        filtered_metrics={
+            str(k): _metrics_to_response(v) for k, v in result.filtered_metrics.items()
+        },
+        unfiltered_metrics={
+            str(k): _metrics_to_response(v) for k, v in result.unfiltered_metrics.items()
+        },
+    )
 
 
 @app.post("/api/pipeline/run")

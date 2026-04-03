@@ -6,6 +6,7 @@ import { SignalTable } from './SignalTable';
 import { TickerDetail } from './TickerDetail';
 import { MeanVarianceChart } from './MeanVarianceChart';
 import { PerformancePanel } from './PerformancePanel';
+import { BacktestPanel } from './BacktestPanel';
 
 interface Props {
   data: DashboardData;
@@ -80,6 +81,9 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
 
       {/* Signal Performance */}
       <PerformancePanel />
+
+      {/* Backtest Engine */}
+      <BacktestPanel />
 
       {/* Portfolio Optimization */}
       <MeanVarianceChart />

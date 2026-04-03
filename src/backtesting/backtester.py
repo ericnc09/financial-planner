@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import structlog
 
 from config.settings import Settings
-from src.clients.tiingo import TiingoClient
 from src.models.database import (
     ConvictionScore,
     SmartMoneyEvent,
@@ -44,9 +43,9 @@ class BacktestResult:
 class Backtester:
     HOLD_PERIODS = [7, 14, 30, 60, 90]
 
-    def __init__(self, settings: Settings, tiingo_client: TiingoClient):
+    def __init__(self, settings: Settings, price_client=None):
         self.settings = settings
-        self.tiingo = tiingo_client
+        self.price_client = price_client
         engine = get_engine(settings.database_url)
         self.session_factory = get_session_factory(engine)
 
@@ -129,7 +128,7 @@ class Backtester:
                     start_str = trade_date.strftime("%Y-%m-%d")
                     end_str = exit_date.strftime("%Y-%m-%d")
 
-                    prices = await self.tiingo.get_price_history(
+                    prices = await self.price_client.get_price_range(
                         event.ticker, start_str, end_str
                     )
                     if len(prices) < 2:
@@ -275,13 +274,14 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0.6, help="Conviction threshold")
     args = parser.parse_args()
 
+    from src.clients.yahoo import YahooClient
+
     settings = Settings()
-    tiingo = TiingoClient(settings.tiingo_api_key)
-    bt = Backtester(settings, tiingo)
+    yahoo = YahooClient()
+    bt = Backtester(settings, yahoo)
 
     async def _run():
         result = await bt.run(args.start, args.end, args.threshold)
         print(bt.compare_filtered_vs_unfiltered(result))
-        await tiingo.close()
 
     asyncio.run(_run())

@@ -134,5 +134,31 @@ class YahooClient:
         rs = avg_gain / avg_loss
         return round(100.0 - (100.0 / (1.0 + rs)), 2)
 
+    async def get_price_range(
+        self, ticker: str, start_date: str, end_date: str
+    ) -> list[dict]:
+        """Fetch daily prices between start_date and end_date.
+        Returns list of dicts with 'adjClose' key (matches Tiingo format for backtester).
+        """
+        try:
+            df = await asyncio.to_thread(self._fetch_range, ticker, start_date, end_date)
+            if df is None or df.empty:
+                return []
+            result = []
+            for date, row in df.iterrows():
+                result.append({
+                    "date": date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date),
+                    "adjClose": float(row["Close"]),
+                })
+            return result
+        except Exception as e:
+            logger.warning("yahoo.price_range_failed", ticker=ticker, error=str(e))
+            return []
+
+    def _fetch_range(self, ticker: str, start_date: str, end_date: str):
+        t = yf.Ticker(ticker)
+        df = t.history(start=start_date, end=end_date)
+        return df if not df.empty else None
+
     async def close(self):
         pass

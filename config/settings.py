@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     pipeline_mode: Literal["oneshot", "daemon"] = "oneshot"
     schedule_interval_minutes: int = 60
 
+    # Alerts
+    slack_webhook_url: str | None = None
+
     log_level: str = "INFO"
 
     model_config = {"env_file": "config/.env", "env_file_encoding": "utf-8"}

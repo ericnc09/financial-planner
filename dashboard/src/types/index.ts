@@ -162,6 +162,20 @@ export interface EnsembleScoreData {
   components: Record<string, number>;
 }
 
+export interface OptionsFlowData {
+  ticker: string;
+  analysis_date: string;
+  pcr: number | null;
+  unusual_volume_score: number | null;
+  iv_skew: number | null;
+  max_pain: number | null;
+  nearest_expiry: string | null;
+  total_call_volume: number | null;
+  total_put_volume: number | null;
+  total_call_oi: number | null;
+  total_put_oi: number | null;
+}
+
 export interface TickerAnalysis {
   ticker: string;
   monte_carlo: MonteCarloData | null;
@@ -172,6 +186,27 @@ export interface TickerAnalysis {
   event_studies: EventStudyData[] | null;
   bayesian_decay: BayesianDecayData[] | null;
   ensemble_scores: EnsembleScoreData[] | null;
+  options_flow: OptionsFlowData | null;
+}
+
+export interface PeriodMetrics {
+  hold_days: number;
+  total_trades: number;
+  win_rate: number;
+  avg_return: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  profit_factor: number;
+  max_drawdown: number;
+}
+
+export interface BacktestResult {
+  date_range: [string, string];
+  total_signals: number;
+  filtered_signals: number;
+  conviction_threshold: number;
+  filtered_metrics: Record<string, PeriodMetrics>;
+  unfiltered_metrics: Record<string, PeriodMetrics>;
 }
 
 export interface DashboardData {

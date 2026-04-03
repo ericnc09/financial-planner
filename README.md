@@ -2,102 +2,18 @@
 
 **Track what insiders and Congress are buying before the market catches on.**
 
-Smart Money Follows is an automated trading signal platform that ingests insider and congressional trade disclosures from public filings, enriches them with fundamentals and macroeconomic context, and scores each signal for conviction — giving you a ranked, actionable feed of the highest-quality trades to inform your own investment decisions.
+Smart Money Follows is an automated trading signal platform that ingests insider and congressional trade disclosures, enriches them with fundamentals and macro data, runs 9 quantitative models, and produces a scored, ranked feed of actionable trading signals through a real-time React dashboard.
 
 ---
 
-## The Problem
-
-Every day, corporate insiders and members of Congress disclose securities trades — often days or weeks before the market prices in the same thesis. This data is public, but it's scattered across SEC filings and government disclosures, buried in XML and HTML, and impossible to act on without hours of manual research.
-
-By the time retail investors notice, the edge is gone.
-
-## The Solution
-
-Smart Money Follows closes that gap. The system:
-
-1. **Ingests** insider trades (SEC EDGAR Form 4) and congressional trades (Capitol Trades) automatically
-2. **Enriches** each signal with real-time fundamentals (P/E, revenue growth, momentum, RSI) and macro regime data (yield curve, unemployment, CPI, fed funds rate)
-3. **Scores** every trade on a 0-100% conviction scale using a weighted model across signal strength, fundamental quality, and macroeconomic conditions
-4. **Surfaces** the highest-conviction opportunities through a real-time dashboard with filtering, sorting, and visual breakdowns
-
-You decide. You execute. The system gives you the edge.
-
----
-
-## Key Features
-
-| Feature | Description |
-|---|---|
-| **Dual Signal Sources** | SEC EDGAR Form 4 filings (insider trades) + Capitol Trades (congressional trades) — zero cost, no paid APIs |
-| **Conviction Scoring** | Multi-factor model combining signal strength (actor reputation, trade size, clustering, timing) with fundamental quality and macro regime |
-| **Macro Regime Detection** | Real-time classification of market conditions (Expansion / Transition / Recession) using FRED economic indicators |
-| **Direction-Aware Analysis** | Scoring adapts based on buy vs. sell — a buy during a drawdown scores differently than a sell at all-time highs |
-| **Live Dashboard** | React-based UI with signal table, macro gauge, conviction breakdowns, and source filtering |
-| **Pipeline Automation** | One-click or scheduled pipeline runs: ingest, enrich, score — all in one pass |
-| **Backtesting Engine** | Historical performance analysis with Sharpe/Sortino ratios, comparing filtered vs. unfiltered signal sets |
-
----
-
-## Architecture
-
-```
-Signal Ingestion          Enrichment & Scoring              Presentation
-
-SEC EDGAR ──┐             Tiingo Fundamentals               React Dashboard
-             ├──> Ingest ──> Enrich ──> Score ──> Store ──> FastAPI Backend
-Capitol     ─┘             FRED Macro Data                  REST API
-Trades
-```
-
-**Four-layer pipeline:**
-
-| Layer | What it does | Data source |
-|---|---|---|
-| **Ingestion** | Fetches and normalizes trade disclosures into a unified event schema | SEC EDGAR RSS + XML, Capitol Trades RSC |
-| **Enrichment** | Attaches fundamentals (P/E, momentum, RSI, drawdown) and sector data to each signal | Tiingo API |
-| **Macro Context** | Classifies the current economic regime and computes a macro modifier (0.5x - 1.5x) | FRED API |
-| **Conviction Scoring** | Produces a final 0-1 conviction score per signal, gates on configurable threshold | Internal scoring engine |
-
----
-
-## Scoring Model
-
-Each signal is scored across three dimensions:
-
-### Signal Score (40% weight)
-- **Actor Reputation** (25%) — Congressional committee members and C-suite insiders score higher
-- **Trade Size** (20%) — Larger trades relative to typical ranges indicate stronger conviction
-- **Cluster Signal** (25%) — Multiple insiders trading the same ticker compounds the signal
-- **Disclosure Timing** (15%) — Trades disclosed quickly after execution are more informative
-- **Consensus** (15%) — Alignment between insider and congressional activity on the same name
-
-### Fundamental Score (35% weight)
-- **Valuation** (25%) — P/E relative to sector, direction-aware (low P/E favors buys)
-- **Momentum** (20%) — 30-day and 90-day price momentum
-- **Volatility Regime** (15%) — RSI-based overbought/oversold detection
-- **Drawdown Opportunity** (20%) — Distance from 52-week high (buying the dip scores well)
-- **Liquidity** (20%) — Average volume ensures tradability
-
-### Macro Modifier (25% weight)
-- **Expansion** (regime score < 0.4) — 1.0x to 1.5x multiplier, favoring risk-on
-- **Transition** (0.4 - 0.7) — 0.8x to 1.0x, neutral to cautious
-- **Recession** (> 0.7) — 0.5x to 0.8x, risk-off dampening
-
-**Final formula:**
-```
-conviction = (signal_score x W_sig + fundamental_score x W_fund) / (W_sig + W_fund) x macro_modifier x direction_boost
-```
-
----
-
-## Getting Started
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.10+
 - Node.js 18+ (for the dashboard)
-- Free API keys: [Tiingo](https://www.tiingo.com/) and [FRED](https://fred.stlouisfed.org/docs/api/api_key.html)
+- Free API key: [FRED](https://fred.stlouisfed.org/docs/api/api_key.html) (required for macro data)
+- Optional: [Tiingo](https://www.tiingo.com/) API key (fallback enrichment), Slack webhook URL (alerts)
 
 ### Installation
 
@@ -106,71 +22,186 @@ conviction = (signal_score x W_sig + fundamental_score x W_fund) / (W_sig + W_fu
 git clone https://github.com/ericnc09/financial-planner.git
 cd financial-planner
 
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Set up environment
+# Set up environment variables
 cp config/.env.example config/.env
-# Edit config/.env and add your Tiingo and FRED API keys
-
-# Initialize the database
-make init-db
-
-# Install dashboard dependencies
-cd dashboard && npm install && cd ..
+# Edit config/.env — add at minimum your FRED_API_KEY
 ```
 
-### Running the System
+### Configure Environment
+
+Edit `config/.env`:
+
+```env
+# Required
+FRED_API_KEY=your_fred_key_here
+
+# Optional — Tiingo is fallback only (yfinance is primary)
+TIINGO_API_KEY=your_tiingo_key_here
+
+# Optional — Slack alerts for high-conviction signals
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Database (defaults to SQLite)
+DATABASE_URL=sqlite:///./smart_money.db
+
+# Scoring
+CONVICTION_THRESHOLD=0.6
+
+# Pipeline
+PIPELINE_MODE=oneshot
+SCHEDULE_INTERVAL_MINUTES=60
+LOG_LEVEL=INFO
+```
+
+### Run the System
 
 ```bash
-# 1. Run the pipeline (fetches signals, enriches, scores)
+# 1. Initialize the database (creates all tables)
+make init-db
+
+# 2. Run the pipeline (ingest signals, enrich, run models, score)
 make run-once
 
-# 2. Start the API server
+# 3. Start the API server (separate terminal)
 make run-api
 
-# 3. Start the dashboard (separate terminal)
-make run-dashboard
+# 4. Start the dashboard (separate terminal)
+cd dashboard && npm install && npm run dev
 ```
 
-The dashboard will be available at `http://localhost:5173` and the API at `http://localhost:8000`.
+- Dashboard: `http://localhost:5173`
+- API + docs: `http://localhost:8000/docs`
 
-### API Endpoints
+### Other Commands
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/signals` | GET | All signals with optional filters (`days`, `source`, `min_conviction`) |
-| `/api/signals/{ticker}` | GET | Signals for a specific ticker |
-| `/api/macro` | GET | Latest macro regime snapshot |
-| `/api/macro/history` | GET | Historical macro data (`days` parameter) |
-| `/api/dashboard` | GET | Combined signals + macro for the dashboard |
-| `/api/pipeline/run` | POST | Trigger a pipeline cycle |
-| `/docs` | GET | Interactive API documentation (Swagger) |
+```bash
+# Run pipeline in daemon mode (repeats on interval)
+make run-daemon
+
+# Run a backtest from CLI
+make backtest
+# or with custom params:
+.venv/bin/python -m src.backtesting.backtester --start 2025-01-01 --end 2026-04-01 --threshold 0.6
+
+# Update signal performance tracking
+.venv/bin/python -m src.tracking.performance
+
+# Run tests
+make test
+```
 
 ---
 
-## Tech Stack
+## How It Works
 
-| Layer | Technology |
+### Pipeline Flow
+
+```
+Signal Ingestion       Enrichment        Analysis Models        Scoring & Alerts
+
+SEC EDGAR (Form 4) ─┐                   Monte Carlo            Conviction Engine
+                     ├─> Ingest ─> Enrich ─> Models ─> Ensemble ─> Score ─> Alert
+Capitol Trades ─────┘    |           |                              |         |
+                       Yahoo      FRED                           Dashboard  Slack
+                      Finance     Macro                          (React)   Webhook
+```
+
+**Step 1 — Ingest:** Fetches insider trades (SEC EDGAR Form 4 XML) and congressional trades (Capitol Trades) from the last 14 days. Deduplicates by (ticker, actor, trade_date, source_type).
+
+**Step 2 — Enrich:** For each signal ticker, fetches fundamentals via yfinance (P/E, market cap, EPS, sector, momentum, RSI, drawdown). Falls back to Tiingo if yfinance fails.
+
+**Step 3 — Macro Context:** Fetches economic indicators from FRED (yield spread, unemployment claims, CPI, fed funds rate, VIX, consumer sentiment, M2, housing starts, put/call ratio). Classifies regime as expansion/transition/recession.
+
+**Step 4 — Analysis Models (9 models per ticker):**
+
+| Model | What It Does |
 |---|---|
-| **Backend** | Python, FastAPI, SQLAlchemy, SQLite (PostgreSQL-ready) |
-| **Data Clients** | httpx (async), fredapi, tenacity (retry logic) |
-| **Scoring** | NumPy, custom weighted multi-factor model |
-| **Frontend** | React 18, TypeScript, Vite, Recharts |
-| **Infrastructure** | structlog (structured logging), APScheduler (daemon mode) |
+| **Monte Carlo** | 10,000-path simulation at 21d and 63d horizons. Probability of profit, expected return, VaR. |
+| **HMM Regime** | Hidden Markov Model detecting bull/bear/sideways states with transition probabilities. |
+| **GARCH** | Volatility forecasting at 5d and 20d. Detects vol expansion/contraction for timing. |
+| **Fama-French** | 5-factor model (Mkt, SMB, HML, RMW, CMA). Measures alpha and systematic risk exposure. |
+| **Event Study** | OLS market model with estimation window [-120,-10], event window [-5,+20]. Cumulative abnormal returns + t-test. |
+| **Copula Tail Risk** | Student-t copula fitting. Tail dependence, VaR/CVaR at 95%/99%, conditional stress VaR. |
+| **Bayesian Decay** | Exponential decay with Gamma prior. Posterior half-life, entry/exit windows, decay quality classification. |
+| **Mean-Variance** | Markowitz optimization across all signal tickers. Max-Sharpe, min-variance, risk contribution. |
+| **Options Flow** | Options chain analysis via yfinance. Put/call ratio, IV skew, unusual volume, max pain. |
+
+**Step 5 — Ensemble Scoring:** Weighted combination of all 9 models into a single 0-100 score with recommendation (strong_buy / buy / hold / avoid).
+
+**Step 6 — Conviction Scoring:** Multi-factor model combining signal strength (40%), fundamental quality (35%), and macro regime modifier (25%) into a 0-1 conviction score.
+
+**Step 7 — Alerts:** If Slack is configured, sends formatted alerts for signals passing the conviction threshold and for ensemble scores > 70.
 
 ---
 
 ## Data Sources
 
-All data sources are **free and require no paid subscriptions**.
+All data sources are **free and require no paid subscriptions** (FRED key is free).
 
-| Source | What | How |
+| Source | What | Rate Limits |
 |---|---|---|
-| **SEC EDGAR** | Insider trades (Form 4) | RSS feed + XML parsing of ownership documents |
-| **Capitol Trades** | Congressional trades | HTML scraping of Next.js RSC payloads |
-| **Tiingo** | Fundamentals, price history, RSI | REST API (free tier) |
-| **FRED** | Macro indicators (yield curve, unemployment, CPI, fed funds) | REST API (free tier) |
+| **SEC EDGAR** | Insider trades (Form 4 filings) | Free, no key needed |
+| **Capitol Trades** | Congressional trade disclosures | Free, no key needed |
+| **Yahoo Finance** (yfinance) | Price history, fundamentals, options chains, enrichment | Free, unlimited |
+| **FRED** | Macro indicators (yield curve, CPI, VIX, M2, etc.) | Free key, generous limits |
+| **Fama-French** (pandas-datareader) | 5-factor model data | Free, no key needed |
+| **Tiingo** | Fallback enrichment + price history | Free key, 2000 req/month |
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/signals` | GET | All signals with filters: `days`, `source`, `min_conviction` |
+| `/api/signals/{ticker}` | GET | Signals for a specific ticker |
+| `/api/analysis/{ticker}` | GET | All 9 model results for a ticker |
+| `/api/analysis/{ticker}/options` | GET | Options flow analysis for a ticker |
+| `/api/analysis/hmm/all` | GET | HMM regime states for all tickers |
+| `/api/analysis/mean-variance` | GET | Portfolio optimization results |
+| `/api/analysis/ensemble/all` | GET | Ensemble scores for all signals |
+| `/api/analysis/event-study/summary` | GET | Aggregated event study statistics |
+| `/api/macro` | GET | Latest macro regime snapshot |
+| `/api/macro/extended` | GET | Extended macro (VIX, sentiment, M2, etc.) |
+| `/api/macro/history` | GET | Historical macro data |
+| `/api/backtest` | POST | Run backtest with `start_date`, `end_date`, `conviction_threshold` |
+| `/api/performance/summary` | GET | Signal performance tracking (win rates, returns) |
+| `/api/performance/update` | POST | Trigger performance update for all signals |
+| `/api/export/signals` | GET | Export signals as CSV or JSON (`format` param) |
+| `/api/export/analysis/{ticker}` | GET | Export ticker analysis as CSV or JSON |
+| `/api/pipeline/run` | POST | Trigger full pipeline cycle |
+| `/api/dashboard` | GET | Combined signals + macro for dashboard |
+| `/docs` | GET | Interactive Swagger API documentation |
+
+---
+
+## Dashboard
+
+The React dashboard provides:
+
+- **Signal Table** — sortable by conviction, date, ticker. Filterable by source. CSV/JSON export.
+- **Macro Gauge** — SVG regime indicator with yield spread, unemployment, CPI, fed funds.
+- **Extended Macro** — VIX, consumer sentiment, M2, housing starts, industrial production.
+- **Performance Panel** — Win rates, average returns by direction/source/conviction bucket, top winners/losers.
+- **Backtest Engine** — Date range picker, conviction slider, equity curve, filtered vs unfiltered metrics comparison.
+- **Mean-Variance Chart** — Efficient frontier, max-Sharpe/min-variance allocation bars, risk contribution.
+- **Ticker Detail** (click any signal) — Full model breakdown:
+  - Ensemble score banner with recommendation
+  - Monte Carlo simulation grid
+  - GARCH volatility forecast
+  - HMM regime probabilities + transition matrix
+  - Fama-French factor exposures
+  - Copula tail risk gauge
+  - Bayesian decay curve with half-life
+  - Event study CAR timeline
+  - Options flow (PCR, IV skew, unusual volume, max pain, volume/OI breakdown)
 
 ---
 
@@ -179,40 +210,66 @@ All data sources are **free and require no paid subscriptions**.
 ```
 financial-planner/
 ├── config/
-│   ├── .env.example        # Environment template (safe to commit)
-│   └── settings.py         # Pydantic settings with validation
+│   ├── .env.example              # Environment template
+│   └── settings.py               # Pydantic settings
 ├── src/
 │   ├── clients/
-│   │   ├── edgar.py        # SEC EDGAR Form 4 parser
-│   │   ├── congress.py     # Capitol Trades scraper
-│   │   ├── tiingo.py       # Tiingo fundamentals + price client
-│   │   └── fred.py         # FRED macro indicators client
+│   │   ├── edgar.py              # SEC EDGAR Form 4 parser
+│   │   ├── congress.py           # Capitol Trades scraper
+│   │   ├── yahoo.py              # yfinance: prices, enrichment, options
+│   │   ├── tiingo.py             # Tiingo fallback client
+│   │   ├── fred.py               # FRED macro indicators
+│   │   ├── fama_french.py        # Fama-French factor data
+│   │   └── options.py            # Options chain analysis
+│   ├── analysis/
+│   │   ├── monte_carlo.py        # Monte Carlo simulation
+│   │   ├── hmm_regime.py         # Hidden Markov Model
+│   │   ├── garch_forecast.py     # GARCH volatility forecasting
+│   │   ├── event_study.py        # Event study (CAR + OLS)
+│   │   ├── copula_tail_risk.py   # Copula tail dependence
+│   │   ├── bayesian_decay.py     # Bayesian signal decay
+│   │   ├── mean_variance.py      # Mean-Variance optimization
+│   │   └── ensemble_scoring.py   # Ensemble model aggregation
 │   ├── scoring/
-│   │   ├── signal_scorer.py       # 5-factor signal scoring
-│   │   ├── fundamental_scorer.py  # 5-factor fundamental scoring
-│   │   ├── macro_scorer.py        # Regime detection + modifier
-│   │   └── conviction_engine.py   # Combined conviction pipeline
-│   ├── models/
-│   │   ├── database.py     # SQLAlchemy models + engine setup
-│   │   └── schemas.py      # Pydantic validation schemas
-│   ├── pipeline/
-│   │   └── orchestrator.py # End-to-end pipeline orchestration
+│   │   ├── conviction_engine.py  # Combined conviction pipeline
+│   │   ├── signal_scorer.py      # 5-factor signal scoring
+│   │   ├── fundamental_scorer.py # 5-factor fundamental scoring
+│   │   └── macro_scorer.py       # Regime detection + modifier
+│   ├── alerts/
+│   │   └── notifier.py           # Slack webhook alerts
+│   ├── tracking/
+│   │   └── performance.py        # Signal performance tracker
 │   ├── backtesting/
-│   │   └── backtester.py   # Historical performance analysis
+│   │   └── backtester.py         # Historical backtester
+│   ├── pipeline/
+│   │   └── orchestrator.py       # End-to-end pipeline
+│   ├── models/
+│   │   ├── database.py           # SQLAlchemy models (16 tables)
+│   │   └── schemas.py            # Pydantic validation schemas
 │   └── api/
-│       └── api.py          # FastAPI endpoints
+│       └── api.py                # FastAPI endpoints (18 routes)
 ├── dashboard/
 │   └── src/
-│       ├── App.tsx                    # Main application
 │       ├── components/
-│       │   ├── Dashboard.tsx          # Layout + stat cards
-│       │   ├── SignalTable.tsx         # Sortable, filterable signal table
-│       │   ├── MacroGauge.tsx         # SVG regime gauge
-│       │   ├── ConvictionBar.tsx      # Stacked score breakdown
-│       │   └── RadarBreakdown.tsx     # Radar chart visualization
-│       ├── api/client.ts             # API client wrapper
-│       └── types/index.ts            # TypeScript interfaces
-├── tests/
+│       │   ├── Dashboard.tsx          # Main layout
+│       │   ├── SignalTable.tsx         # Signal table with export
+│       │   ├── MacroGauge.tsx          # SVG regime gauge
+│       │   ├── ExtendedMacro.tsx       # Extended macro panel
+│       │   ├── PerformancePanel.tsx    # Performance tracking
+│       │   ├── BacktestPanel.tsx       # Backtest UI
+│       │   ├── MeanVarianceChart.tsx   # Efficient frontier
+│       │   ├── TickerDetail.tsx        # Per-ticker drill-down
+│       │   ├── MonteCarloChart.tsx     # MC simulation grid
+│       │   ├── VolatilityForecast.tsx  # GARCH forecast
+│       │   ├── FactorExposure.tsx      # Fama-French factors
+│       │   ├── EventStudyChart.tsx     # CAR timeline
+│       │   ├── TailRiskGauge.tsx       # Copula tail risk
+│       │   ├── BayesianDecayChart.tsx  # Decay curve
+│       │   ├── EnsembleScore.tsx       # Model consensus
+│       │   ├── OptionsFlow.tsx         # Options flow analysis
+│       │   └── ConvictionBar.tsx       # Conviction visualization
+│       ├── api/client.ts              # API client
+│       └── types/index.ts             # TypeScript interfaces
 ├── Makefile
 ├── requirements.txt
 └── README.md
@@ -220,13 +277,27 @@ financial-planner/
 
 ---
 
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Backend** | Python 3.10+, FastAPI, SQLAlchemy, SQLite (PostgreSQL-ready) |
+| **Analysis** | NumPy, SciPy, arch (GARCH), hmmlearn (HMM), yfinance |
+| **Data** | httpx (async HTTP), fredapi, pandas, pandas-datareader |
+| **Frontend** | React 18, TypeScript, Vite |
+| **Alerts** | Slack webhooks via httpx |
+| **Infrastructure** | structlog (logging), APScheduler (daemon mode), Pydantic (settings + validation) |
+
+---
+
 ## Roadmap
 
-- [ ] Alerting — push notifications (email/Slack) when high-conviction signals fire
-- [ ] Historical conviction tracking — monitor how signals performed post-detection
-- [ ] Sector heatmap — visual clustering of smart money flow by sector
-- [ ] Additional signal sources — 13F filings, dark pool activity
-- [ ] Portfolio simulation — paper trading mode with P&L tracking
+- [ ] Scheduled pipeline + historical backfill (cron + 6-12 month SEC EDGAR archives)
+- [ ] Sector & thematic analysis (sector clustering, correlation heatmap)
+- [ ] Paper trading mode with P&L tracking
+- [ ] Alternative data sources (Alpha Vantage, Alpaca, SEC full-text, Reddit sentiment)
+- [ ] ML signal classifier (XGBoost/LightGBM on historical features)
+- [ ] Real-time streaming (WebSocket + SSE)
 
 ---
 

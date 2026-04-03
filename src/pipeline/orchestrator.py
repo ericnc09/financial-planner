@@ -15,6 +15,7 @@ from src.analysis.hmm_regime import HMMRegimeDetector
 from src.analysis.mean_variance import MeanVarianceOptimizer
 from src.analysis.monte_carlo import MonteCarloSimulator
 from src.clients.congress import CongressClient
+from src.clients.options import OptionsClient
 from src.clients.edgar import EdgarClient
 from src.clients.fama_french import FamaFrenchClient
 from src.clients.fred import FredClient
@@ -30,6 +31,7 @@ from src.models.database import (
     EventStudyResult,
     ExtendedMacroData,
     MeanVarianceResult,
+    OptionsFlow,
     FamaFrenchExposure,
     GARCHForecast,
     HMMRegimeState,
@@ -41,6 +43,7 @@ from src.models.database import (
     init_db,
 )
 from src.models.schemas import MacroRegime
+from src.alerts.notifier import SlackNotifier
 from src.scoring.conviction_engine import ConvictionEngine
 from src.scoring.fundamental_scorer import FundamentalScorer
 from src.scoring.macro_scorer import MacroScorer
@@ -68,6 +71,8 @@ class Orchestrator:
         self.bayesian_decay: BayesianDecayAnalyzer | None = None
         self.mean_variance: MeanVarianceOptimizer | None = None
         self.ensemble: EnsembleScorer | None = None
+        self.options_client: OptionsClient | None = None
+        self.notifier: SlackNotifier | None = None
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
@@ -96,6 +101,10 @@ class Orchestrator:
         self.bayesian_decay = BayesianDecayAnalyzer()
         self.mean_variance = MeanVarianceOptimizer()
         self.ensemble = EnsembleScorer()
+        self.options_client = OptionsClient()
+
+        # Alerts
+        self.notifier = SlackNotifier(self.settings.slack_webhook_url)
 
         # Scoring
         signal_scorer = SignalScorer()
@@ -155,6 +164,9 @@ class Orchestrator:
         # --- Step 3f: EVENT STUDY + BAYESIAN DECAY ---
         await self._run_event_studies(new_events)
 
+        # --- Step 3h: OPTIONS FLOW ---
+        await self._run_options_analysis(unique_tickers)
+
         # --- Step 3g: ENSEMBLE SCORING ---
         await self._run_ensemble_scoring(new_events)
 
@@ -175,7 +187,7 @@ class Orchestrator:
             threshold=self.settings.conviction_threshold,
         )
 
-        # Log actionable signals for manual review
+        # Log actionable signals + send Slack alerts
         for event, enrichment, result in passing:
             logger.info(
                 "orchestrator.actionable_signal",
@@ -186,6 +198,17 @@ class Orchestrator:
                 price=enrichment.price_at_signal,
                 sector=enrichment.sector,
             )
+            if self.notifier:
+                await self.notifier.send_conviction_alert(
+                    ticker=event.ticker,
+                    direction=event.direction.value,
+                    actor=event.actor,
+                    conviction=result.conviction,
+                    signal_score=result.signal_score,
+                    fundamental_score=result.fundamental_score,
+                    sector=enrichment.sector,
+                    price=enrichment.price_at_signal,
+                )
 
         logger.info("orchestrator.cycle_complete")
 
@@ -716,6 +739,44 @@ class Orchestrator:
         finally:
             session.close()
 
+    async def _run_options_analysis(self, tickers: list[str]):
+        """Fetch and analyze options chain data for each ticker."""
+        for ticker in tickers:
+            try:
+                result = await self.options_client.get_options_analysis(ticker)
+                if result:
+                    self._persist_options_flow(result)
+                    logger.debug("orchestrator.options_ok", ticker=ticker)
+            except Exception as e:
+                logger.warning("orchestrator.options_failed", ticker=ticker, error=str(e))
+        logger.info("orchestrator.options_done", tickers=len(tickers))
+
+    def _persist_options_flow(self, data: dict):
+        session = self.session_factory()
+        try:
+            row = OptionsFlow(
+                ticker=data["ticker"],
+                analysis_date=data["analysis_date"],
+                pcr=data.get("pcr"),
+                unusual_volume_score=data.get("unusual_volume_score"),
+                iv_skew=data.get("iv_skew"),
+                max_pain=data.get("max_pain"),
+                nearest_expiry=data.get("nearest_expiry"),
+                total_call_volume=data.get("total_call_volume"),
+                total_put_volume=data.get("total_put_volume"),
+                total_call_oi=data.get("total_call_oi"),
+                total_put_oi=data.get("total_put_oi"),
+            )
+            session.add(row)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        except Exception as e:
+            session.rollback()
+            logger.warning("orchestrator.options_persist_failed", error=str(e))
+        finally:
+            session.close()
+
     async def _run_ensemble_scoring(self, new_events: list):
         """Run ensemble scoring combining all model outputs per event."""
         logger.info("orchestrator.ensemble_start", events=len(new_events))
@@ -782,6 +843,17 @@ class Orchestrator:
                 es_dict = {"car_5d": es_row.car_5d, "car_20d": es_row.car_20d,
                            "is_significant": es_row.is_significant} if es_row else None
 
+                # Options flow
+                opts_row = session.query(OptionsFlow).filter(
+                    OptionsFlow.ticker == ticker
+                ).order_by(OptionsFlow.analysis_date.desc()).first()
+                opts_dict = {
+                    "pcr": opts_row.pcr,
+                    "iv_skew": opts_row.iv_skew,
+                    "unusual_volume_score": opts_row.unusual_volume_score,
+                    "max_pain": opts_row.max_pain,
+                } if opts_row else None
+
                 result = self.ensemble.score(
                     direction=event_schema.direction.value,
                     monte_carlo=mc_dict,
@@ -791,9 +863,21 @@ class Orchestrator:
                     copula=cop_dict,
                     bayesian_decay=bd_dict,
                     event_study=es_dict,
+                    options_flow=opts_dict,
                 )
 
                 self._persist_ensemble(ticker, event_id, run_date, result)
+
+                # Slack alert for high-scoring ensemble signals
+                if self.notifier and result.get("total_score", 0) > 70:
+                    await self.notifier.send_ensemble_alert(
+                        ticker=ticker,
+                        direction=result.get("direction", ""),
+                        ensemble_score=result["total_score"],
+                        confidence=result.get("confidence", 0),
+                        recommendation=result.get("recommendation", ""),
+                        components=result.get("components", {}),
+                    )
 
             except Exception as e:
                 logger.warning("orchestrator.ensemble_failed", ticker=event_schema.ticker, error=str(e))
@@ -884,6 +968,8 @@ class Orchestrator:
             await self.yahoo.close()
         if self.fama_french:
             await self.fama_french.close()
+        if self.notifier:
+            await self.notifier.close()
 
 
 if __name__ == "__main__":

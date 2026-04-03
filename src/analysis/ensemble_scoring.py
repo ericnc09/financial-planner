@@ -24,13 +24,14 @@ class EnsembleScorer:
     """
 
     WEIGHTS = {
-        "monte_carlo": 0.20,
-        "hmm_regime": 0.15,
-        "garch": 0.10,
-        "fama_french": 0.10,
-        "copula_tail": 0.15,
-        "bayesian_decay": 0.15,
-        "event_study": 0.15,
+        "monte_carlo": 0.175,
+        "hmm_regime": 0.130,
+        "garch": 0.090,
+        "fama_french": 0.090,
+        "copula_tail": 0.130,
+        "bayesian_decay": 0.130,
+        "event_study": 0.130,
+        "options_flow": 0.125,
     }
 
     def score(
@@ -43,6 +44,7 @@ class EnsembleScorer:
         copula: dict | None = None,
         bayesian_decay: dict | None = None,
         event_study: dict | None = None,
+        options_flow: dict | None = None,
     ) -> dict:
         """
         Compute ensemble score 0-100 from all available model outputs.
@@ -98,6 +100,12 @@ class EnsembleScorer:
             es_score = self._score_event_study(event_study, direction)
             components["event_study"] = es_score
             available_weight += self.WEIGHTS["event_study"]
+
+        # --- Options Flow (0-100) ---
+        if options_flow:
+            of_score = self._score_options_flow(options_flow, direction)
+            components["options_flow"] = of_score
+            available_weight += self.WEIGHTS["options_flow"]
 
         # Weighted average (re-normalize if some models missing)
         if available_weight == 0:
@@ -230,3 +238,54 @@ class EnsembleScorer:
         sig_bonus = 30 if is_sig else 0
 
         return min(100, car_score + sig_bonus)
+
+    def _score_options_flow(self, opts: dict, direction: str) -> float:
+        """Score options flow data 0-100 based on direction alignment."""
+        score = 50.0  # neutral baseline
+
+        # Put/Call Ratio alignment (0-35 points)
+        pcr = opts.get("pcr")
+        if pcr is not None:
+            if direction == "buy":
+                # Low PCR = bullish (more call buying)
+                if pcr < 0.5:
+                    score += 25
+                elif pcr < 0.7:
+                    score += 15
+                elif pcr > 1.2:
+                    score -= 20
+                elif pcr > 1.0:
+                    score -= 10
+            else:  # sell
+                # High PCR = bearish (more put buying)
+                if pcr > 1.2:
+                    score += 25
+                elif pcr > 1.0:
+                    score += 15
+                elif pcr < 0.5:
+                    score -= 20
+                elif pcr < 0.7:
+                    score -= 10
+
+        # IV Skew alignment (0-20 points)
+        iv_skew = opts.get("iv_skew")
+        if iv_skew is not None:
+            if direction == "buy":
+                # Negative skew (calls more expensive) = bullish
+                if iv_skew < -0.1:
+                    score += 15
+                elif iv_skew > 0.2:
+                    score -= 10  # bearish skew on a buy signal
+            else:
+                # Positive skew (puts more expensive) = bearish
+                if iv_skew > 0.2:
+                    score += 15
+                elif iv_skew < -0.1:
+                    score -= 10
+
+        # Unusual volume amplifier (0-15 points)
+        uv = opts.get("unusual_volume_score", 0)
+        if uv > 0.5:
+            score += min(15, uv * 15)
+
+        return max(0, min(100, score))

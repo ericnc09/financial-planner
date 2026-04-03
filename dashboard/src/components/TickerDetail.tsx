@@ -8,6 +8,7 @@ import { FactorExposure } from './FactorExposure';
 import { TailRiskGauge } from './TailRiskGauge';
 import { EnsembleScore } from './EnsembleScore';
 import { BayesianDecayChart } from './BayesianDecayChart';
+import { OptionsFlow } from './OptionsFlow';
 
 interface Props {
   ticker: string;
@@ -111,6 +112,7 @@ export const TickerDetail: React.FC<Props> = ({ ticker, onClose }) => {
             {data.event_studies && data.event_studies.length > 0 && (
               <EventStudyChart events={data.event_studies} />
             )}
+            {data.options_flow && <OptionsFlow data={data.options_flow} />}
           </div>
         </>
       )}

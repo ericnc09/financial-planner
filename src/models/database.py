@@ -454,6 +454,28 @@ class ExtendedMacroData(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class OptionsFlow(Base):
+    __tablename__ = "options_flow"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    analysis_date = Column(DateTime, nullable=False)
+    pcr = Column(Float, nullable=True)
+    unusual_volume_score = Column(Float, nullable=True)
+    iv_skew = Column(Float, nullable=True)
+    max_pain = Column(Float, nullable=True)
+    nearest_expiry = Column(String(20), nullable=True)
+    total_call_volume = Column(Integer, nullable=True)
+    total_put_volume = Column(Integer, nullable=True)
+    total_call_oi = Column(Integer, nullable=True)
+    total_put_oi = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "analysis_date", name="uq_options_ticker_date"),
+    )
+
+
 # --- Engine / Session helpers ---
 
 

@@ -1,4 +1,4 @@
-import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData, MeanVarianceData, EnsembleScoreData } from '../types';
+import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData, MeanVarianceData, EnsembleScoreData, BacktestResult } from '../types';
 
 const BASE = '/api';
 
@@ -24,4 +24,10 @@ export const api = {
   getMeanVariance: () => fetchJson<MeanVarianceData>('/analysis/mean-variance'),
   getAllEnsembleScores: () => fetchJson<EnsembleScoreData[]>('/analysis/ensemble/all'),
   triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
+  runBacktest: (startDate: string, endDate: string, threshold: number): Promise<BacktestResult> =>
+    fetch(`${BASE}/backtest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start_date: startDate, end_date: endDate, conviction_threshold: threshold }),
+    }).then(r => r.json()),
 };
