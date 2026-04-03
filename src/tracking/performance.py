@@ -26,6 +26,9 @@ logger = structlog.get_logger()
 
 
 class PerformanceTracker:
+    # Transaction costs: 10bps slippage + 5bps commission per side = 30bps round-trip
+    COST_PER_TRADE = 0.0030
+
     def __init__(self, session_factory):
         self.session_factory = session_factory
         self.yahoo = YahooClient()
@@ -53,11 +56,6 @@ class PerformanceTracker:
         for ticker, evts in ticker_events.items():
             try:
                 price_data = await self.yahoo.get_price_history(ticker, days=504)
-                if price_data is None:
-                    continue
-
-                dates = price_data["dates"]
-                closes = price_data["closes"]
 
                 for evt in evts:
                     perf = existing.get(evt.id)
@@ -67,6 +65,21 @@ class PerformanceTracker:
                     )
                     if not needs_update:
                         continue
+
+                    if price_data is None:
+                        # No price data — likely delisted/bankrupt.
+                        # Mark as total loss to prevent survivorship bias,
+                        # but only if event is old enough that data SHOULD exist.
+                        days_since = (datetime.utcnow() - evt.trade_date).days
+                        if days_since > 10:
+                            result = self._delisted_loss(evt)
+                            self._persist(evt, result, existing.get(evt.id))
+                            updated += 1
+                            logger.info("performance.delisted_loss", ticker=ticker, event_id=evt.id)
+                        continue
+
+                    dates = price_data["dates"]
+                    closes = price_data["closes"]
 
                     result = self._compute_returns(
                         evt, dates, closes
@@ -82,9 +95,28 @@ class PerformanceTracker:
         await self.yahoo.close()
         return updated
 
+    def _delisted_loss(self, event) -> dict:
+        """Return -100% for all horizons when ticker has no price data (delisted/bankrupt)."""
+        direction = event.direction.value
+        mult = 1.0 if direction == "buy" else -1.0
+        loss = -1.0 * mult  # buy delisted = -100%, sell delisted = +100% (short won)
+        return {
+            "entry_price": 0.0,
+            "entry_date": event.trade_date,
+            "price_5d": 0.0, "return_5d": loss,
+            "price_10d": 0.0, "return_10d": loss,
+            "price_20d": 0.0, "return_20d": loss,
+            "price_60d": 0.0, "return_60d": loss,
+            "is_winner_5d": loss > 0,
+            "is_winner_20d": loss > 0,
+        }
+
     def _compute_returns(self, event, dates, closes) -> dict | None:
-        """Compute returns at various horizons from trade date."""
-        trade_date = event.trade_date.date() if hasattr(event.trade_date, 'date') else event.trade_date
+        """Compute returns at various horizons from disclosure date (when signal is actionable).
+        Falls back to trade_date if disclosure_date is not available."""
+        # Use disclosure_date as entry point to avoid look-ahead bias
+        raw_date = getattr(event, "disclosure_date", None) or event.trade_date
+        trade_date = raw_date.date() if hasattr(raw_date, 'date') else raw_date
 
         # Find entry index (first trading day on or after trade date)
         entry_idx = None
@@ -116,6 +148,8 @@ class PerformanceTracker:
                 future_price = float(closes[target_idx])
                 raw_return = (future_price - entry_price) / entry_price
                 adjusted_return = raw_return * mult
+                # Deduct round-trip transaction costs (slippage + commission)
+                adjusted_return -= self.COST_PER_TRADE
                 result[f"price_{label}"] = future_price
                 result[f"return_{label}"] = round(adjusted_return, 6)
             else:

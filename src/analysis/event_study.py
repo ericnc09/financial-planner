@@ -132,9 +132,10 @@ class EventStudyAnalyzer:
         car_20d = car_at_day(min(20, self.evt_end))
 
         # T-statistic for the post-event CAR
-        # Using standardized CAR: t = CAR / (sigma_est * sqrt(n_post_days))
-        n_post = self.evt_end  # number of post-event days
-        t_stat = float(car[-1]) / (sigma_est * np.sqrt(n_post)) if sigma_est > 0 else 0
+        # Using standardized CAR: t = CAR / (sigma_est * sqrt(n_actual_post_days))
+        # n_post = actual number of event-window observations (not hardcoded horizon)
+        n_post = len(evt_stock)
+        t_stat = float(car[-1]) / (sigma_est * np.sqrt(n_post)) if sigma_est > 0 and n_post > 0 else 0
         p_value = float(2 * (1 - stats.t.cdf(abs(t_stat), df=len(est_stock) - 2)))
 
         result = {

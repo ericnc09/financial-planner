@@ -42,6 +42,8 @@ class BacktestResult:
 
 class Backtester:
     HOLD_PERIODS = [7, 14, 30, 60, 90]
+    # Transaction costs: 10bps slippage + 5bps commission per side = 30bps round-trip
+    COST_PER_TRADE = 0.0030  # 30bps round-trip (entry + exit)
 
     def __init__(self, settings: Settings, price_client=None):
         self.settings = settings
@@ -123,27 +125,42 @@ class Backtester:
         async def _get_return(event, _cs):
             async with sem:
                 try:
-                    trade_date = event.trade_date
-                    exit_date = trade_date + timedelta(days=hold_days)
-                    start_str = trade_date.strftime("%Y-%m-%d")
+                    # Use disclosure_date as entry point (when we actually
+                    # learn about the trade) to avoid look-ahead bias.
+                    # Fall back to trade_date only if disclosure_date missing.
+                    entry_date = getattr(event, "disclosure_date", None) or event.trade_date
+                    exit_date = entry_date + timedelta(days=hold_days)
+                    start_str = entry_date.strftime("%Y-%m-%d")
                     end_str = exit_date.strftime("%Y-%m-%d")
 
                     prices = await self.price_client.get_price_range(
                         event.ticker, start_str, end_str
                     )
                     if len(prices) < 2:
-                        return None
+                        # No price data — likely delisted. Treat as total loss
+                        # to prevent survivorship bias (only for events old
+                        # enough that data SHOULD exist).
+                        days_since = (datetime.utcnow() - entry_date).days
+                        if days_since > hold_days + 10:
+                            logger.debug("backtester.delisted_total_loss", ticker=event.ticker)
+                            return -1.0
+                        return None  # too recent, data not yet available
 
                     entry_price = prices[0].get("adjClose")
                     exit_price = prices[-1].get("adjClose")
 
-                    if not entry_price or not exit_price or entry_price <= 0:
+                    if not entry_price or entry_price <= 0:
                         return None
+                    if not exit_price or exit_price <= 0:
+                        # Exit price missing (delisted mid-hold) — total loss
+                        return -1.0
 
                     ret = (exit_price - entry_price) / entry_price
                     # Invert return for sells
                     if event.direction.value == "sell":
                         ret = -ret
+                    # Deduct round-trip transaction costs (slippage + commission)
+                    ret -= self.COST_PER_TRADE
                     return ret
                 except Exception as e:
                     logger.debug(

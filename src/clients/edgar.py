@@ -200,16 +200,20 @@ class EdgarClient:
             else:
                 return None
 
-            # Transaction date
+            # Transaction date — MUST come from the filing, never fall back
+            # to filing_date (which introduces look-ahead bias since the
+            # filing is published days after the actual trade).
             date_elem = tx_elem.find(".//transactionDate/value")
-            trade_date = filing_date
-            if date_elem is not None and date_elem.text:
-                try:
-                    trade_date = datetime.strptime(
-                        date_elem.text.strip(), "%Y-%m-%d"
-                    )
-                except ValueError:
-                    pass
+            if date_elem is None or not date_elem.text:
+                logger.debug("edgar.missing_trade_date", filing_date=filing_date)
+                return None
+            try:
+                trade_date = datetime.strptime(
+                    date_elem.text.strip(), "%Y-%m-%d"
+                )
+            except ValueError:
+                logger.debug("edgar.invalid_trade_date", raw=date_elem.text)
+                return None
 
             # Shares
             shares_elem = tx_elem.find(".//transactionShares/value")
