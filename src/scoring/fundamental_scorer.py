@@ -4,6 +4,25 @@ from src.models.schemas import Direction, EnrichmentSchema
 
 logger = structlog.get_logger()
 
+# Median trailing P/E by sector (approximate, updated periodically)
+# Source: S&P 500 sector medians as of early 2024
+SECTOR_MEDIAN_PE = {
+    "Technology": 30.0,
+    "Communication Services": 22.0,
+    "Consumer Cyclical": 22.0,
+    "Consumer Defensive": 23.0,
+    "Healthcare": 25.0,
+    "Financial Services": 14.0,
+    "Financials": 14.0,
+    "Industrials": 22.0,
+    "Energy": 11.0,
+    "Utilities": 18.0,
+    "Real Estate": 35.0,
+    "Basic Materials": 15.0,
+    "Materials": 15.0,
+}
+DEFAULT_SECTOR_PE = 20.0  # fallback when sector unknown
+
 
 class FundamentalScorer:
     """Scores fundamental quality and price setup (0-1). Direction-aware."""
@@ -18,7 +37,7 @@ class FundamentalScorer:
 
     def score(self, enrichment: EnrichmentSchema, direction: Direction) -> float:
         scores = {
-            "valuation": self._valuation_score(enrichment.pe_ratio, direction),
+            "valuation": self._valuation_score(enrichment.pe_ratio, direction, enrichment.sector),
             "momentum": self._momentum_score(
                 enrichment.momentum_30d, enrichment.momentum_90d, direction
             ),
@@ -32,29 +51,39 @@ class FundamentalScorer:
         return round(min(1.0, max(0.0, composite)), 4)
 
     def _valuation_score(
-        self, pe_ratio: float | None, direction: Direction
+        self, pe_ratio: float | None, direction: Direction, sector: str | None = None
     ) -> float:
         if pe_ratio is None:
             return 0.5
         if pe_ratio <= 0:
             # Negative P/E = unprofitable
             return 0.3 if direction == Direction.BUY else 0.6
+
+        # Sector-relative P/E: ratio of stock P/E to sector median
+        sector_pe = SECTOR_MEDIAN_PE.get(sector, DEFAULT_SECTOR_PE) if sector else DEFAULT_SECTOR_PE
+        relative_pe = pe_ratio / sector_pe  # <1 = cheap vs sector, >1 = expensive
+
         if direction == Direction.BUY:
-            if pe_ratio < 15:
+            # Cheap relative to sector = good buy
+            if relative_pe < 0.6:
                 return 1.0
-            elif pe_ratio < 25:
+            elif relative_pe < 0.85:
                 return 0.7
-            elif pe_ratio < 40:
-                return 0.4
-            return 0.2
-        else:  # SELL — high P/E confirms overvaluation
-            if pe_ratio > 40:
+            elif relative_pe < 1.2:
+                return 0.5
+            elif relative_pe < 1.6:
+                return 0.3
+            return 0.2  # very expensive vs sector
+        else:  # SELL — expensive relative to sector confirms overvaluation
+            if relative_pe > 1.6:
                 return 1.0
-            elif pe_ratio > 25:
+            elif relative_pe > 1.2:
                 return 0.7
-            elif pe_ratio > 15:
-                return 0.4
-            return 0.2
+            elif relative_pe > 0.85:
+                return 0.5
+            elif relative_pe > 0.6:
+                return 0.3
+            return 0.2  # very cheap vs sector, selling is contrarian
 
     def _momentum_score(
         self,

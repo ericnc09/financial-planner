@@ -28,14 +28,15 @@ class EnsembleScorer:
     """
 
     DEFAULT_WEIGHTS = {
-        "monte_carlo": 0.175,
-        "hmm_regime": 0.130,
-        "garch": 0.090,
-        "fama_french": 0.090,
-        "copula_tail": 0.130,
-        "bayesian_decay": 0.130,
-        "event_study": 0.130,
-        "options_flow": 0.125,
+        "monte_carlo": 0.160,
+        "hmm_regime": 0.120,
+        "garch": 0.085,
+        "fama_french": 0.085,
+        "copula_tail": 0.115,
+        "bayesian_decay": 0.115,
+        "event_study": 0.115,
+        "options_flow": 0.105,
+        "earnings_overlay": 0.100,
     }
 
     def __init__(self, calibrated_weights: dict[str, float] | None = None):
@@ -57,6 +58,7 @@ class EnsembleScorer:
         bayesian_decay: dict | None = None,
         event_study: dict | None = None,
         options_flow: dict | None = None,
+        earnings_overlay: dict | None = None,
     ) -> dict:
         """
         Compute ensemble score 0-100 from all available model outputs.
@@ -118,6 +120,12 @@ class EnsembleScorer:
             of_score = self._score_options_flow(options_flow, direction)
             components["options_flow"] = of_score
             available_weight += self.WEIGHTS["options_flow"]
+
+        # --- Earnings Overlay (0-100) ---
+        if earnings_overlay:
+            eo_score = earnings_overlay.get("score", 50)
+            components["earnings_overlay"] = float(eo_score)
+            available_weight += self.WEIGHTS["earnings_overlay"]
 
         # Weighted average (re-normalize if some models missing)
         if available_weight == 0:

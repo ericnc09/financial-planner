@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import Settings
 from src.analysis.bayesian_decay import BayesianDecayAnalyzer
 from src.analysis.copula_tail_risk import CopulaTailRisk
+from src.analysis.earnings_overlay import EarningsOverlay
 from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.event_study import EventStudyAnalyzer
 from src.analysis.garch_forecast import GARCHForecaster
@@ -72,6 +73,7 @@ class Orchestrator:
         self.mean_variance: MeanVarianceOptimizer | None = None
         self.ensemble: EnsembleScorer | None = None
         self.options_client: OptionsClient | None = None
+        self.earnings_overlay: EarningsOverlay | None = None
         self.notifier: SlackNotifier | None = None
         self.engine = None
         self.session_factory = None
@@ -102,6 +104,7 @@ class Orchestrator:
         self.mean_variance = MeanVarianceOptimizer()
         self.ensemble = EnsembleScorer()
         self.options_client = OptionsClient()
+        self.earnings_overlay = EarningsOverlay()
 
         # Alerts
         self.notifier = SlackNotifier(self.settings.slack_webhook_url)
@@ -854,6 +857,15 @@ class Orchestrator:
                     "max_pain": opts_row.max_pain,
                 } if opts_row else None
 
+                # Earnings overlay
+                earnings_dict = None
+                try:
+                    earnings_dict = await self.earnings_overlay.analyze(
+                        ticker, event_schema.trade_date, event_schema.direction.value
+                    )
+                except Exception as e:
+                    logger.debug("orchestrator.earnings_failed", ticker=ticker, error=str(e))
+
                 result = self.ensemble.score(
                     direction=event_schema.direction.value,
                     monte_carlo=mc_dict,
@@ -864,6 +876,7 @@ class Orchestrator:
                     bayesian_decay=bd_dict,
                     event_study=es_dict,
                     options_flow=opts_dict,
+                    earnings_overlay=earnings_dict,
                 )
 
                 self._persist_ensemble(ticker, event_id, run_date, result)

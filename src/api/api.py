@@ -1093,6 +1093,20 @@ async def run_backtest(req: BacktestRequest):
     )
 
 
+@app.post("/api/backtest/oos")
+async def run_oos_backtest(req: BacktestRequest, train_pct: float = 0.7):
+    """Out-of-sample backtest: split into train/test by date, compare metrics."""
+    from src.backtesting.backtester import Backtester
+    from src.clients.yahoo import YahooClient
+
+    yahoo = YahooClient()
+    bt = Backtester(app.state.settings, yahoo)
+    result = await bt.run_oos(
+        req.start_date, req.end_date, req.conviction_threshold, train_pct
+    )
+    return result
+
+
 @app.post("/api/pipeline/run")
 async def trigger_pipeline():
     orchestrator = Orchestrator(app.state.settings)
@@ -1117,3 +1131,112 @@ def get_dashboard():
         macro=macro,
         extended_macro=ext_macro,
     )
+
+
+@app.post("/api/ml/xgboost/train")
+def train_xgboost():
+    """Train XGBoost classifier on historical signals with realized returns."""
+    from src.analysis.xgboost_classifier import XGBoostSignalClassifier
+
+    session = app.state.session_factory()
+    try:
+        from src.models.database import SmartMoneyEvent, Enrichment, ConvictionScore, PerformanceRecord
+        from sqlalchemy.orm import joinedload
+
+        events = (
+            session.query(SmartMoneyEvent)
+            .options(
+                joinedload(SmartMoneyEvent.enrichment),
+                joinedload(SmartMoneyEvent.conviction_score),
+            )
+            .all()
+        )
+
+        perf_rows = {p.event_id: p for p in session.query(PerformanceRecord).all()}
+
+        records = []
+        for evt in events:
+            perf = perf_rows.get(evt.id)
+            if not perf or perf.return_20d is None:
+                continue
+            enr = evt.enrichment
+            cs = evt.conviction_score
+            record = {
+                "pe_ratio": enr.pe_ratio if enr else None,
+                "market_cap": enr.market_cap if enr else None,
+                "revenue_growth_yoy": enr.revenue_growth_yoy if enr else None,
+                "eps_latest": enr.eps_latest if enr else None,
+                "eps_growth_yoy": enr.eps_growth_yoy if enr else None,
+                "momentum_30d": enr.momentum_30d if enr else None,
+                "momentum_90d": enr.momentum_90d if enr else None,
+                "rsi_14d": enr.rsi_14d if enr else None,
+                "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else None,
+                "avg_volume_30d": enr.avg_volume_30d if enr else None,
+                "signal_score": cs.signal_score if cs else None,
+                "fundamental_score": cs.fundamental_score if cs else None,
+                "macro_modifier": cs.macro_modifier if cs else None,
+                "conviction": cs.conviction if cs else None,
+                "direction_encoded": 1.0 if evt.direction == "buy" else -1.0,
+                "return_20d": perf.return_20d,
+            }
+            records.append(record)
+
+        clf = XGBoostSignalClassifier()
+        result = clf.train(records)
+
+        # Store on app state for prediction use
+        if result.get("status") == "trained":
+            app.state.xgboost_model = clf
+
+        return result
+    finally:
+        session.close()
+
+
+@app.post("/api/ml/xgboost/predict")
+def predict_xgboost(ticker: str):
+    """Get XGBoost prediction for a specific ticker's latest signal."""
+    clf = getattr(app.state, "xgboost_model", None)
+    if clf is None or clf.model is None:
+        return {"error": "Model not trained. POST /api/ml/xgboost/train first."}
+
+    session = app.state.session_factory()
+    try:
+        from src.models.database import SmartMoneyEvent, Enrichment, ConvictionScore
+
+        evt = (
+            session.query(SmartMoneyEvent)
+            .filter(SmartMoneyEvent.ticker == ticker.upper())
+            .order_by(SmartMoneyEvent.trade_date.desc())
+            .first()
+        )
+        if not evt:
+            return {"error": f"No signals found for {ticker}"}
+
+        enr = session.query(Enrichment).filter(Enrichment.event_id == evt.id).first()
+        cs = session.query(ConvictionScore).filter(ConvictionScore.event_id == evt.id).first()
+
+        features = {
+            "pe_ratio": enr.pe_ratio if enr else 0,
+            "market_cap": enr.market_cap if enr else 0,
+            "revenue_growth_yoy": enr.revenue_growth_yoy if enr else 0,
+            "eps_latest": enr.eps_latest if enr else 0,
+            "eps_growth_yoy": enr.eps_growth_yoy if enr else 0,
+            "momentum_30d": enr.momentum_30d if enr else 0,
+            "momentum_90d": enr.momentum_90d if enr else 0,
+            "rsi_14d": enr.rsi_14d if enr else 0,
+            "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else 0,
+            "avg_volume_30d": enr.avg_volume_30d if enr else 0,
+            "signal_score": cs.signal_score if cs else 0,
+            "fundamental_score": cs.fundamental_score if cs else 0,
+            "macro_modifier": cs.macro_modifier if cs else 0,
+            "conviction": cs.conviction if cs else 0,
+            "direction_encoded": 1.0 if evt.direction == "buy" else -1.0,
+        }
+
+        prediction = clf.predict(features)
+        prediction["ticker"] = ticker.upper()
+        prediction["direction"] = evt.direction
+        return prediction
+    finally:
+        session.close()

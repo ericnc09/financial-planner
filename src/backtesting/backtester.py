@@ -240,6 +240,115 @@ class Backtester:
             max_drawdown=round(max_dd, 6),
         )
 
+    async def run_oos(
+        self,
+        start_date: str,
+        end_date: str,
+        conviction_threshold: float = 0.6,
+        train_pct: float = 0.7,
+    ) -> dict:
+        """
+        Out-of-sample backtest: split data into train (first 70%) and test
+        (last 30%) by date. Never touch test until final evaluation.
+
+        Returns:
+            Dict with train_result, test_result, and overfit diagnostics.
+        """
+        session = self.session_factory()
+        try:
+            events = (
+                session.query(SmartMoneyEvent, ConvictionScore)
+                .join(ConvictionScore, SmartMoneyEvent.id == ConvictionScore.event_id)
+                .filter(
+                    SmartMoneyEvent.trade_date >= datetime.strptime(start_date, "%Y-%m-%d"),
+                    SmartMoneyEvent.trade_date <= datetime.strptime(end_date, "%Y-%m-%d"),
+                )
+                .order_by(SmartMoneyEvent.trade_date)
+                .all()
+            )
+        finally:
+            session.close()
+
+        if len(events) < 10:
+            return {"status": "insufficient_data", "n_events": len(events)}
+
+        # Split by date order (no shuffling — preserves temporal order)
+        split_idx = int(len(events) * train_pct)
+        train_events = events[:split_idx]
+        test_events = events[split_idx:]
+
+        train_filtered = [(e, cs) for e, cs in train_events if cs.conviction >= conviction_threshold]
+        test_filtered = [(e, cs) for e, cs in test_events if cs.conviction >= conviction_threshold]
+
+        train_date_range = (
+            train_events[0][0].trade_date.strftime("%Y-%m-%d"),
+            train_events[-1][0].trade_date.strftime("%Y-%m-%d"),
+        )
+        test_date_range = (
+            test_events[0][0].trade_date.strftime("%Y-%m-%d"),
+            test_events[-1][0].trade_date.strftime("%Y-%m-%d"),
+        )
+
+        # Compute metrics for each split and hold period
+        train_metrics = {}
+        test_metrics = {}
+        overfit_diagnostics = {}
+
+        for period in self.HOLD_PERIODS:
+            train_returns = await self._compute_returns(train_filtered, period)
+            test_returns = await self._compute_returns(test_filtered, period)
+
+            tm = self._compute_metrics(train_returns, period)
+            tsm = self._compute_metrics(test_returns, period)
+            train_metrics[period] = tm
+            test_metrics[period] = tsm
+
+            # Overfit detection: large train-test gap = overfitting
+            sharpe_decay = tm.sharpe_ratio - tsm.sharpe_ratio if tsm.total_trades > 0 else None
+            wr_decay = tm.win_rate - tsm.win_rate if tsm.total_trades > 0 else None
+            overfit_diagnostics[period] = {
+                "sharpe_decay": round(sharpe_decay, 4) if sharpe_decay is not None else None,
+                "win_rate_decay": round(wr_decay, 4) if wr_decay is not None else None,
+                "is_overfit": sharpe_decay is not None and sharpe_decay > 0.5,
+            }
+
+        def _metrics_dict(m):
+            return {
+                "hold_days": m.hold_days,
+                "total_trades": m.total_trades,
+                "win_rate": m.win_rate,
+                "avg_return": m.avg_return,
+                "sharpe_ratio": m.sharpe_ratio,
+                "sortino_ratio": m.sortino_ratio,
+                "profit_factor": m.profit_factor,
+                "max_drawdown": m.max_drawdown,
+            }
+
+        logger.info(
+            "backtester.oos_complete",
+            train_n=len(train_filtered),
+            test_n=len(test_filtered),
+            train_range=train_date_range,
+            test_range=test_date_range,
+        )
+
+        return {
+            "status": "complete",
+            "train_pct": train_pct,
+            "conviction_threshold": conviction_threshold,
+            "train": {
+                "date_range": list(train_date_range),
+                "n_signals": len(train_filtered),
+                "metrics": {str(k): _metrics_dict(v) for k, v in train_metrics.items()},
+            },
+            "test": {
+                "date_range": list(test_date_range),
+                "n_signals": len(test_filtered),
+                "metrics": {str(k): _metrics_dict(v) for k, v in test_metrics.items()},
+            },
+            "overfit_diagnostics": {str(k): v for k, v in overfit_diagnostics.items()},
+        }
+
     def compare_filtered_vs_unfiltered(self, result: BacktestResult) -> str:
         """Generate a readable comparison report."""
         lines = [
