@@ -59,8 +59,12 @@ class MonteCarloSimulator:
         max_horizon = max(horizons)
 
         # Generate all random walks at once (vectorized)
-        # GBM: S(t) = S(0) * exp((mu - sigma^2/2)*t + sigma*W(t))
-        z = self.rng.standard_normal((self.n_simulations, max_horizon))
+        # GBM with Student-t shocks (df=5) for fat-tailed simulation
+        # Captures the leptokurtosis observed in real equity returns
+        df = 5
+        z = self.rng.standard_t(df=df, size=(self.n_simulations, max_horizon))
+        # Scale to unit variance: Var(t_df) = df/(df-2), so divide by sqrt(df/(df-2))
+        z = z / np.sqrt(df / (df - 2))
         daily_returns = (mu - 0.5 * sigma**2) + sigma * z
         cum_returns = np.cumsum(daily_returns, axis=1)
         price_paths = current_price * np.exp(cum_returns)

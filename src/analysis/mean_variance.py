@@ -11,6 +11,8 @@ Given a set of tickers from smart money signals, computes:
 import numpy as np
 import structlog
 from scipy.optimize import minimize
+from scipy.linalg import inv
+from sklearn.covariance import LedoitWolf
 
 logger = structlog.get_logger()
 
@@ -24,13 +26,16 @@ class MeanVarianceOptimizer:
         self,
         tickers: list[str],
         returns_matrix: np.ndarray,
+        views: dict[str, float] | None = None,
     ) -> dict | None:
         """
-        Run mean-variance optimization.
+        Run mean-variance optimization with optional Black-Litterman views.
 
         Args:
             tickers: List of ticker symbols.
             returns_matrix: (n_days, n_tickers) array of daily returns.
+            views: Optional dict of ticker -> expected excess return (annualized)
+                   derived from conviction scores. Used for Black-Litterman.
 
         Returns:
             Dict with optimal weights, frontier, and risk decomposition.
@@ -41,7 +46,9 @@ class MeanVarianceOptimizer:
             return None
 
         mu = np.mean(returns_matrix, axis=0)  # daily expected returns
-        cov = np.cov(returns_matrix, rowvar=False)  # daily covariance
+        # Ledoit-Wolf shrinkage: stabilizes covariance estimate for small samples
+        lw = LedoitWolf().fit(returns_matrix)
+        cov = lw.covariance_
 
         if np.any(np.isnan(cov)) or np.linalg.det(cov) == 0:
             logger.warning("meanvar.singular_covariance")
@@ -50,6 +57,13 @@ class MeanVarianceOptimizer:
         # Annualize
         mu_ann = mu * 252
         cov_ann = cov * 252
+
+        # --- Black-Litterman adjusted returns (if views provided) ---
+        if views:
+            mu_bl = self._black_litterman(tickers, mu_ann, cov_ann, views)
+            if mu_bl is not None:
+                mu_ann = mu_bl
+                logger.info("meanvar.black_litterman_applied", n_views=len(views))
 
         # --- Minimum Variance Portfolio ---
         min_var_w = self._min_variance(cov_ann, n_assets)
@@ -155,3 +169,64 @@ class MeanVarianceOptimizer:
         marginal = cov @ w / port_vol
         rc = w * marginal
         return rc / np.sum(rc)  # normalize to sum to 1
+
+    def _black_litterman(
+        self,
+        tickers: list[str],
+        mu_ann: np.ndarray,
+        cov_ann: np.ndarray,
+        views: dict[str, float],
+    ) -> np.ndarray | None:
+        """
+        Black-Litterman model: blend equilibrium returns with investor views.
+
+        Uses market-cap-weighted equilibrium as prior (approximated by equal weight
+        since we don't have market caps), then tilts toward conviction-based views.
+
+        Args:
+            tickers: asset labels
+            mu_ann: annualized sample mean returns (N,)
+            cov_ann: annualized covariance matrix (N, N)
+            views: ticker -> expected excess return (annualized)
+
+        Returns:
+            BL-adjusted expected returns (N,) or None if no valid views.
+        """
+        n = len(tickers)
+        ticker_idx = {t: i for i, t in enumerate(tickers)}
+
+        # Build P (pick matrix) and Q (view returns)
+        valid_views = [(ticker_idx[t], v) for t, v in views.items() if t in ticker_idx]
+        if not valid_views:
+            return None
+
+        k = len(valid_views)
+        P = np.zeros((k, n))
+        Q = np.zeros(k)
+        for row, (idx, ret) in enumerate(valid_views):
+            P[row, idx] = 1.0
+            Q[row] = ret
+
+        # Risk aversion parameter (delta) implied by market
+        delta = 2.5  # standard assumption
+
+        # Equilibrium returns: pi = delta * Sigma * w_mkt
+        # Approximate market weights as equal weight (no market cap data)
+        w_mkt = np.ones(n) / n
+        pi = delta * cov_ann @ w_mkt
+
+        # Tau: scaling factor for uncertainty in equilibrium (typical 0.025-0.05)
+        tau = 0.05
+
+        # Omega: uncertainty in views (proportional to variance of each view asset)
+        omega = np.diag([tau * P[i] @ cov_ann @ P[i].T for i in range(k)])
+
+        # BL posterior: mu_BL = [(tau*Sigma)^-1 + P'*Omega^-1*P]^-1
+        #                       * [(tau*Sigma)^-1 * pi + P'*Omega^-1*Q]
+        tau_cov_inv = inv(tau * cov_ann)
+        omega_inv = inv(omega)
+
+        posterior_cov = inv(tau_cov_inv + P.T @ omega_inv @ P)
+        mu_bl = posterior_cov @ (tau_cov_inv @ pi + P.T @ omega_inv @ Q)
+
+        return mu_bl

@@ -59,7 +59,7 @@ class GARCHForecaster:
                 vol="Garch",
                 p=1,
                 q=1,
-                dist="normal",
+                dist="t",  # Student-t for better tail risk capture
                 rescale=False,
             )
             result = model.fit(disp="off", show_warning=False)

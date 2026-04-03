@@ -3,10 +3,14 @@ Ensemble Scoring — Combines all model outputs into a unified signal score.
 
 Aggregates Monte Carlo, HMM, GARCH, Fama-French, Copula, Bayesian Decay,
 and Event Study into a single composite score with component breakdown.
+
+Supports walk-forward weight calibration: optimize weights on rolling
+6-month windows, test on next month, to produce data-driven weights.
 """
 
 import numpy as np
 import structlog
+from scipy.optimize import minimize
 
 logger = structlog.get_logger()
 
@@ -23,7 +27,7 @@ class EnsembleScorer:
         event_study  : 0.15  (historical CAR for this pattern)
     """
 
-    WEIGHTS = {
+    DEFAULT_WEIGHTS = {
         "monte_carlo": 0.175,
         "hmm_regime": 0.130,
         "garch": 0.090,
@@ -33,6 +37,14 @@ class EnsembleScorer:
         "event_study": 0.130,
         "options_flow": 0.125,
     }
+
+    def __init__(self, calibrated_weights: dict[str, float] | None = None):
+        """
+        Args:
+            calibrated_weights: Walk-forward optimized weights. Falls back to
+                                DEFAULT_WEIGHTS if None or empty.
+        """
+        self.WEIGHTS = calibrated_weights if calibrated_weights else self.DEFAULT_WEIGHTS
 
     def score(
         self,
@@ -289,3 +301,193 @@ class EnsembleScorer:
             score += min(15, uv * 15)
 
         return max(0, min(100, score))
+
+
+class WalkForwardCalibrator:
+    """
+    Walk-forward optimization of ensemble weights.
+
+    Given historical signal records (each with component scores and realized
+    returns), optimizes weights on rolling train windows and evaluates on
+    the next test window.
+
+    Usage:
+        calibrator = WalkForwardCalibrator()
+        result = calibrator.calibrate(records)
+        # result["optimized_weights"] can be passed to EnsembleScorer
+    """
+
+    MODEL_NAMES = list(EnsembleScorer.DEFAULT_WEIGHTS.keys())
+
+    def __init__(
+        self,
+        train_months: int = 6,
+        test_months: int = 1,
+    ):
+        self.train_months = train_months
+        self.test_months = test_months
+
+    def calibrate(self, records: list[dict]) -> dict:
+        """
+        Run walk-forward calibration on historical signal records.
+
+        Args:
+            records: List of dicts, each with:
+                - "date": datetime or str (signal date)
+                - "components": dict of model_name -> score (0-100)
+                - "realized_return": float (actual return after hold period)
+                - "direction": "buy" or "sell"
+
+        Returns:
+            Dict with optimized_weights, fold_results, and summary stats.
+        """
+        if len(records) < 30:
+            logger.warning("walkforward.insufficient_records", n=len(records))
+            return {
+                "optimized_weights": EnsembleScorer.DEFAULT_WEIGHTS,
+                "n_folds": 0,
+                "status": "insufficient_data",
+            }
+
+        # Sort by date
+        records = sorted(records, key=lambda r: r["date"])
+
+        # Split into monthly folds
+        folds = self._make_folds(records)
+        if len(folds) < self.train_months + self.test_months:
+            return {
+                "optimized_weights": EnsembleScorer.DEFAULT_WEIGHTS,
+                "n_folds": len(folds),
+                "status": "insufficient_folds",
+            }
+
+        fold_results = []
+        all_optimized_weights = []
+
+        for i in range(self.train_months, len(folds) - self.test_months + 1):
+            # Train on prior train_months folds
+            train_data = []
+            for f in range(i - self.train_months, i):
+                train_data.extend(folds[f])
+
+            # Test on next test_months folds
+            test_data = []
+            for f in range(i, min(i + self.test_months, len(folds))):
+                test_data.extend(folds[f])
+
+            if len(train_data) < 10 or len(test_data) < 3:
+                continue
+
+            # Optimize weights on train set
+            opt_weights = self._optimize_weights(train_data)
+
+            # Evaluate on test set
+            train_corr = self._evaluate(train_data, opt_weights)
+            test_corr = self._evaluate(test_data, opt_weights)
+
+            fold_results.append({
+                "fold": i,
+                "train_n": len(train_data),
+                "test_n": len(test_data),
+                "train_corr": round(train_corr, 4),
+                "test_corr": round(test_corr, 4),
+                "weights": {k: round(v, 4) for k, v in opt_weights.items()},
+            })
+            all_optimized_weights.append(opt_weights)
+
+        if not all_optimized_weights:
+            return {
+                "optimized_weights": EnsembleScorer.DEFAULT_WEIGHTS,
+                "n_folds": 0,
+                "status": "no_valid_folds",
+            }
+
+        # Average weights across all folds
+        avg_weights = {}
+        for name in self.MODEL_NAMES:
+            avg_weights[name] = np.mean([w[name] for w in all_optimized_weights])
+        # Re-normalize
+        total = sum(avg_weights.values())
+        avg_weights = {k: round(v / total, 4) for k, v in avg_weights.items()}
+
+        avg_test_corr = np.mean([f["test_corr"] for f in fold_results])
+
+        logger.info(
+            "walkforward.calibrated",
+            n_folds=len(fold_results),
+            avg_test_corr=round(avg_test_corr, 4),
+            weights=avg_weights,
+        )
+
+        return {
+            "optimized_weights": avg_weights,
+            "n_folds": len(fold_results),
+            "avg_test_correlation": round(avg_test_corr, 4),
+            "fold_results": fold_results,
+            "status": "calibrated",
+        }
+
+    def _make_folds(self, records: list[dict]) -> list[list[dict]]:
+        """Group records into monthly buckets."""
+        folds = []
+        current_month = None
+        current_fold = []
+        for r in records:
+            d = r["date"]
+            month_key = d.strftime("%Y-%m") if hasattr(d, "strftime") else str(d)[:7]
+            if month_key != current_month:
+                if current_fold:
+                    folds.append(current_fold)
+                current_fold = [r]
+                current_month = month_key
+            else:
+                current_fold.append(r)
+        if current_fold:
+            folds.append(current_fold)
+        return folds
+
+    def _optimize_weights(self, data: list[dict]) -> dict[str, float]:
+        """Find weights that maximize rank correlation between ensemble score and realized return."""
+        scores_matrix, returns_arr = self._build_matrices(data)
+        n_models = len(self.MODEL_NAMES)
+
+        if scores_matrix.shape[0] < n_models:
+            return dict(EnsembleScorer.DEFAULT_WEIGHTS)
+
+        def neg_corr(w):
+            w = w / w.sum()  # normalize
+            ensemble = scores_matrix @ w
+            # Rank correlation (Spearman)
+            from scipy.stats import spearmanr
+            corr, _ = spearmanr(ensemble, returns_arr)
+            return -corr if not np.isnan(corr) else 0.0
+
+        w0 = np.array([EnsembleScorer.DEFAULT_WEIGHTS[n] for n in self.MODEL_NAMES])
+        bounds = [(0.01, 0.5)] * n_models
+        cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0}]
+
+        res = minimize(neg_corr, w0, method="SLSQP", bounds=bounds, constraints=cons)
+        opt_w = res.x if res.success else w0
+        opt_w = opt_w / opt_w.sum()
+
+        return {name: float(opt_w[i]) for i, name in enumerate(self.MODEL_NAMES)}
+
+    def _evaluate(self, data: list[dict], weights: dict[str, float]) -> float:
+        """Compute Spearman correlation between weighted scores and realized returns."""
+        scores_matrix, returns_arr = self._build_matrices(data)
+        w = np.array([weights[n] for n in self.MODEL_NAMES])
+        ensemble = scores_matrix @ w
+        from scipy.stats import spearmanr
+        corr, _ = spearmanr(ensemble, returns_arr)
+        return corr if not np.isnan(corr) else 0.0
+
+    def _build_matrices(self, data: list[dict]):
+        """Extract score matrix (n_signals x n_models) and returns vector."""
+        scores = []
+        returns = []
+        for r in data:
+            comps = r.get("components", {})
+            row = [comps.get(name, 50.0) for name in self.MODEL_NAMES]  # 50 = neutral default
+            scores.append(row)
+            returns.append(r["realized_return"])
+        return np.array(scores), np.array(returns)
