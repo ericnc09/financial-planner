@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Alerts
     slack_webhook_url: str | None = None
 
+    # Slack Bot (Socket Mode)
+    slack_bot_token: str | None = None
+    slack_app_token: str | None = None
+
     log_level: str = "INFO"
 
     model_config = {"env_file": "config/.env", "env_file_encoding": "utf-8"}

@@ -1,4 +1,4 @@
-.PHONY: init-db run-once run-daemon run-api run-dashboard test backtest install
+.PHONY: init-db run-once run-daemon run-api run-dashboard run-slack-bot test backtest install
 
 install:
 	pip install -r requirements.txt
@@ -23,3 +23,6 @@ test:
 
 backtest:
 	python -m src.backtesting.backtester --start 2024-01-01 --end 2025-12-31
+
+run-slack-bot:
+	python -m src.slack_bot.main
