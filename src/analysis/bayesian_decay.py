@@ -16,10 +16,44 @@ from scipy import stats
 logger = structlog.get_logger()
 
 
+# Regime-conditional prior half-lives (days).
+# Alpha decays faster in bear/recession environments.
+REGIME_HALF_LIFE = {
+    "expansion": 22.0,
+    "transition": 15.0,
+    "recession": 8.0,
+    "bull": 22.0,
+    "mild_bull": 18.0,
+    "sideways": 13.0,
+    "mild_bear": 9.0,
+    "bear": 7.0,
+}
+
+
 class BayesianDecayAnalyzer:
-    def __init__(self, prior_half_life: float = 15.0, prior_strength: float = 2.0):
-        self.prior_lambda = np.log(2) / prior_half_life
+    def __init__(
+        self,
+        prior_half_life: float = 15.0,
+        prior_strength: float = 2.0,
+        regime: str | None = None,
+    ):
+        """
+        Args:
+            prior_half_life: Default prior on signal half-life in days.
+                             Overridden when `regime` is provided.
+            prior_strength: Concentration of the Gamma prior (higher = tighter).
+            regime: Market regime string ('expansion', 'transition', 'recession',
+                    or HMM state 'bull'/'bear'/'sideways').
+                    When provided, adjusts the prior half-life accordingly.
+        """
+        if regime and regime in REGIME_HALF_LIFE:
+            effective_hl = REGIME_HALF_LIFE[regime]
+            logger.info("bayesian_decay.regime_prior", regime=regime, half_life=effective_hl)
+        else:
+            effective_hl = prior_half_life
+        self.prior_lambda = np.log(2) / effective_hl
         self.prior_strength = prior_strength
+        self.regime = regime
         self.rng = np.random.default_rng(42)
 
     def analyze(
@@ -95,6 +129,7 @@ class BayesianDecayAnalyzer:
 
         result = {
             "direction": direction,
+            "regime": self.regime,
             "n_days": n_days,
             "total_car": round(total_car, 6),
             "mle_amplitude": round(mle_A, 6),

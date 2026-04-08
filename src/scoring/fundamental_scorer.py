@@ -4,6 +4,25 @@ from src.models.schemas import Direction, EnrichmentSchema
 
 logger = structlog.get_logger()
 
+# Median short interest ratio by sector (days-to-cover)
+# Source: FINRA / Bloomberg estimates
+SECTOR_MEDIAN_SHORT_RATIO = {
+    "Technology": 2.5,
+    "Communication Services": 2.0,
+    "Consumer Cyclical": 3.0,
+    "Consumer Defensive": 2.0,
+    "Healthcare": 2.5,
+    "Financial Services": 1.5,
+    "Financials": 1.5,
+    "Industrials": 2.5,
+    "Energy": 3.5,
+    "Utilities": 2.0,
+    "Real Estate": 4.0,
+    "Basic Materials": 3.0,
+    "Materials": 3.0,
+}
+DEFAULT_SHORT_RATIO = 2.5
+
 # Median trailing P/E by sector (approximate, updated periodically)
 # Source: S&P 500 sector medians as of early 2024
 SECTOR_MEDIAN_PE = {
@@ -28,11 +47,12 @@ class FundamentalScorer:
     """Scores fundamental quality and price setup (0-1). Direction-aware."""
 
     WEIGHTS = {
-        "valuation": 0.25,
-        "momentum": 0.20,
-        "volatility_regime": 0.15,
-        "drawdown_opportunity": 0.20,
-        "liquidity": 0.20,
+        "valuation": 0.22,
+        "momentum": 0.18,
+        "volatility_regime": 0.13,
+        "drawdown_opportunity": 0.18,
+        "liquidity": 0.19,
+        "short_interest": 0.10,
     }
 
     def score(self, enrichment: EnrichmentSchema, direction: Direction) -> float:
@@ -46,6 +66,9 @@ class FundamentalScorer:
                 enrichment.drawdown_from_52w_high, direction
             ),
             "liquidity": self._liquidity_score(enrichment.avg_volume_30d),
+            "short_interest": self._short_interest_score(
+                enrichment.short_ratio, direction, enrichment.sector
+            ),
         }
         composite = sum(scores[k] * self.WEIGHTS[k] for k in self.WEIGHTS)
         return round(min(1.0, max(0.0, composite)), 4)
@@ -141,6 +164,41 @@ class FundamentalScorer:
             elif drawdown < 0.10:
                 return 0.7
             return 0.4  # already down, less sell conviction
+
+    def _short_interest_score(
+        self, short_ratio: float | None, direction: Direction, sector: str | None = None
+    ) -> float:
+        """Score based on short interest ratio (days-to-cover).
+
+        BUY: High short ratio → short squeeze potential → bullish boost.
+             But extremely high ratio (>7 days) → crowded short, risky entry.
+        SELL: High short ratio → confirms bearish thesis and crowded trade.
+        """
+        if short_ratio is None:
+            return 0.5  # neutral when unknown
+
+        sector_median = SECTOR_MEDIAN_SHORT_RATIO.get(sector, DEFAULT_SHORT_RATIO) if sector else DEFAULT_SHORT_RATIO
+        relative_sr = short_ratio / max(sector_median, 0.1)
+
+        if direction == Direction.BUY:
+            # Moderate squeeze potential is best; extreme shorts can signal real trouble
+            if 1.5 <= relative_sr <= 3.0:
+                return 0.85  # elevated short — squeeze potential
+            elif 1.0 <= relative_sr < 1.5:
+                return 0.65  # mildly elevated
+            elif relative_sr < 1.0:
+                return 0.45  # lightly shorted — less squeeze potential
+            else:  # relative_sr > 3.0 — extreme short, could mean real distress
+                return 0.35
+        else:  # SELL
+            # High short interest confirms bear thesis but crowded = squeeze risk
+            if relative_sr >= 2.5:
+                return 0.80  # heavily shorted, confirms bearish positioning
+            elif relative_sr >= 1.5:
+                return 0.65
+            elif relative_sr >= 1.0:
+                return 0.45
+            return 0.30  # lightly shorted, selling against the crowd
 
     def _liquidity_score(self, avg_volume: float | None) -> float:
         if avg_volume is None:

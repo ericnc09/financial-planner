@@ -44,6 +44,7 @@ class EnrichmentSchema(BaseModel):
     drawdown_from_52w_high: float | None = None
     avg_volume_30d: float | None = None
     sector: str | None = None
+    short_ratio: float | None = None
 
 
 class MacroSnapshotSchema(BaseModel):

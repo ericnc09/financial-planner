@@ -84,6 +84,7 @@ class YahooClient:
             market_cap = info.get("marketCap")
             eps_latest = info.get("trailingEps")
             sector = info.get("sector")
+            short_ratio = info.get("shortRatio")
 
             # Revenue/EPS growth
             revenue_growth = info.get("revenueGrowth")
@@ -102,6 +103,7 @@ class YahooClient:
                 drawdown_from_52w_high=drawdown,
                 avg_volume_30d=avg_vol,
                 sector=sector,
+                short_ratio=float(short_ratio) if short_ratio is not None else None,
             )
         except Exception as e:
             logger.warning("yahoo.enrich_failed", ticker=ticker, error=str(e))

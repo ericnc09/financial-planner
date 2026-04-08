@@ -26,3 +26,6 @@ backtest:
 
 run-slack-bot:
 	python -m src.slack_bot.main
+
+validate:
+	python -m src.backtesting.validator
