@@ -16,7 +16,19 @@ logger = structlog.get_logger()
 
 
 class ConvictionEngine:
-    """Combines signal, fundamental, and macro scores into a single conviction."""
+    """Combines signal, fundamental, and macro scores into a single conviction.
+
+    Supports adaptive thresholding: the conviction threshold adjusts based
+    on the current macro regime and volatility environment.
+    """
+
+    # Adaptive threshold adjustments by regime
+    REGIME_THRESHOLD_ADJUSTMENTS = {
+        "recession": 0.10,    # raise threshold in recession (fewer buys)
+        "contraction": 0.08,
+        "transition": 0.03,
+        "expansion": -0.05,   # relax threshold in expansion
+    }
 
     def __init__(
         self,
@@ -42,7 +54,7 @@ class ConvictionEngine:
         fundamental_score = self.fundamental_scorer.score(
             enrichment, event.direction
         )
-        _regime, macro_modifier = self.macro_scorer.score(
+        regime, macro_modifier = self.macro_scorer.score(
             macro_snapshot, event.direction
         )
 
@@ -60,7 +72,11 @@ class ConvictionEngine:
         conviction = base * macro_modifier * direction_boost
         conviction = round(max(0.0, min(1.0, conviction)), 4)
 
-        passes = conviction >= self.settings.conviction_threshold
+        # Adaptive threshold: adjust based on regime and volatility
+        threshold = self._adaptive_threshold(
+            regime, enrichment, event.direction
+        )
+        passes = conviction >= threshold
 
         logger.info(
             "conviction_engine.scored",
@@ -83,6 +99,56 @@ class ConvictionEngine:
             conviction=conviction,
             passes_threshold=passes,
         )
+
+    def _adaptive_threshold(
+        self,
+        regime: str,
+        enrichment: EnrichmentSchema,
+        direction: Direction,
+    ) -> float:
+        """
+        Compute regime- and volatility-adjusted conviction threshold.
+
+        In bear/high-vol regimes, raise the bar for buy signals (require
+        stronger conviction). In calm expansions, relax slightly.
+        For sell signals in bear markets, we relax (easier to confirm).
+        """
+        base = self.settings.conviction_threshold
+
+        # Regime adjustment
+        regime_adj = self.REGIME_THRESHOLD_ADJUSTMENTS.get(
+            regime.lower() if regime else "transition", 0.0
+        )
+
+        # For sell signals, invert the regime adjustment
+        # (it's easier to sell in recessions, harder in expansions)
+        if direction == Direction.SELL:
+            regime_adj = -regime_adj
+
+        # Volatility adjustment: high RSI extremes → raise threshold
+        rsi = enrichment.rsi_14d
+        vol_adj = 0.0
+        if rsi is not None:
+            if rsi < 20 or rsi > 80:
+                vol_adj = 0.05  # extreme territory, be cautious
+            elif rsi < 30 or rsi > 70:
+                vol_adj = 0.02  # moderate caution
+
+        threshold = base + regime_adj + vol_adj
+        # Clamp to reasonable range
+        threshold = max(0.45, min(0.80, threshold))
+
+        if threshold != base:
+            logger.debug(
+                "conviction_engine.adaptive_threshold",
+                base=base,
+                regime=regime,
+                regime_adj=regime_adj,
+                vol_adj=vol_adj,
+                final=round(threshold, 4),
+            )
+
+        return round(threshold, 4)
 
     def _direction_boost(
         self, enrichment: EnrichmentSchema, direction: Direction

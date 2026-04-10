@@ -11,8 +11,27 @@ Supports walk-forward weight calibration: optimize weights on rolling
 import numpy as np
 import structlog
 from scipy.optimize import minimize
+from scipy.stats import false_discovery_control
 
 logger = structlog.get_logger()
+
+
+# ── Multiple Testing Correction ──────────────────────────────────────────────
+
+def benjamini_hochberg(p_values: list[float], alpha: float = 0.05) -> list[bool]:
+    """
+    Benjamini-Hochberg FDR correction.
+
+    Returns a boolean mask: True = reject null (signal is significant after correction).
+    Uses scipy's false_discovery_control under the hood.
+    """
+    if not p_values:
+        return []
+    arr = np.array(p_values)
+    # Replace NaN/None with 1.0 (not significant)
+    arr = np.where(np.isfinite(arr), arr, 1.0)
+    adjusted = false_discovery_control(arr, method="bh")
+    return [bool(p <= alpha) for p in adjusted]
 
 
 class EnsembleScorer:
@@ -26,6 +45,12 @@ class EnsembleScorer:
         bayesian_decay: 0.15 (signal still active?)
         event_study  : 0.15  (historical CAR for this pattern)
     """
+
+    # Minimum number of models that must independently score >= 50 (neutral)
+    # to allow actionable (buy/sell) recommendations. Addresses multiple
+    # testing: with 9 models, requiring 4+ agreement filters ~30% of
+    # spurious signals where only 1-2 models happen to score high.
+    MIN_AGREEING_MODELS = 4
 
     DEFAULT_WEIGHTS = {
         "monte_carlo": 0.160,
@@ -138,8 +163,21 @@ class EnsembleScorer:
         n_models = len(components)
         confidence = round(available_weight / sum(self.WEIGHTS.values()), 4)
 
-        # Recommendation
-        if total >= 75:
+        # Model agreement: count how many models independently score above neutral (50)
+        agreeing_models = sum(1 for s in components.values() if s >= 50)
+        agreement_ratio = agreeing_models / n_models if n_models > 0 else 0
+
+        # FDR-gated recommendation: require minimum model agreement for
+        # actionable recommendations. This addresses the multiple testing
+        # problem — with 9 models, some will score high by chance.
+        min_agreement = self.MIN_AGREEING_MODELS
+        agreement_met = agreeing_models >= min_agreement
+
+        # Recommendation (gated by model agreement)
+        if not agreement_met and total >= 55:
+            # Downgrade: models disagree, ensemble score is misleading
+            rec = "hold"
+        elif total >= 75:
             rec = "strong_buy" if direction == "buy" else "strong_sell"
         elif total >= 55:
             rec = "buy" if direction == "buy" else "sell"
@@ -153,6 +191,9 @@ class EnsembleScorer:
             "total_score": round(total, 1),
             "components": {k: round(v, 1) for k, v in components.items()},
             "n_models": n_models,
+            "agreeing_models": agreeing_models,
+            "agreement_ratio": round(agreement_ratio, 4),
+            "agreement_met": agreement_met,
             "confidence": confidence,
             "recommendation": rec,
         }
@@ -309,6 +350,68 @@ class EnsembleScorer:
             score += min(15, uv * 15)
 
         return max(0, min(100, score))
+
+    # ── Batch FDR Correction ─────────────────────────────────────────────
+
+    @staticmethod
+    def apply_fdr_filter(
+        scored_signals: list[dict],
+        alpha: float = 0.05,
+    ) -> list[dict]:
+        """
+        Apply Benjamini-Hochberg FDR correction across a batch of scored signals.
+
+        Collects event study p-values from each signal's components and corrects
+        for multiple testing across the full ticker universe. Signals that fail
+        FDR are downgraded to 'hold'.
+
+        Args:
+            scored_signals: List of dicts, each with at least:
+                - "ensemble_result": dict from EnsembleScorer.score()
+                - "event_study": dict with "p_value" field (optional)
+            alpha: FDR significance level.
+
+        Returns:
+            Same list with "fdr_significant" and potentially adjusted recommendation.
+        """
+        # Collect p-values (use 1.0 for signals without event study)
+        p_values = []
+        for sig in scored_signals:
+            es = sig.get("event_study") or {}
+            p = es.get("p_value") or es.get("p_value_5d") or es.get("p_value_20d")
+            p_values.append(float(p) if p is not None else 1.0)
+
+        if not p_values:
+            return scored_signals
+
+        # Apply BH correction
+        significant = benjamini_hochberg(p_values, alpha)
+
+        for sig, is_sig in zip(scored_signals, significant):
+            sig["fdr_significant"] = is_sig
+            # Downgrade non-significant signals that got actionable recommendations
+            if not is_sig:
+                ens = sig.get("ensemble_result", {})
+                rec = ens.get("recommendation", "")
+                if rec in ("buy", "sell", "strong_buy", "strong_sell"):
+                    ens["recommendation_pre_fdr"] = rec
+                    ens["recommendation"] = "hold"
+                    logger.info(
+                        "fdr.downgraded",
+                        ticker=sig.get("ticker", "?"),
+                        original_rec=rec,
+                        p_value=p_values[scored_signals.index(sig)],
+                    )
+
+        n_rejected = sum(significant)
+        logger.info(
+            "fdr.applied",
+            n_signals=len(scored_signals),
+            n_significant=n_rejected,
+            n_downgraded=len(scored_signals) - n_rejected,
+            alpha=alpha,
+        )
+        return scored_signals
 
 
 class WalkForwardCalibrator:
@@ -499,3 +602,99 @@ class WalkForwardCalibrator:
             scores.append(row)
             returns.append(r["realized_return"])
         return np.array(scores), np.array(returns)
+
+
+class RegimeConditionalCalibrator:
+    """
+    Extends walk-forward calibration with regime-conditional weights.
+
+    Maintains separate weight vectors per market regime (bull/bear/sideways).
+    Some models are more valuable in certain regimes — e.g. GARCH is more
+    informative during vol spikes, HMM during regime transitions.
+
+    Usage:
+        calibrator = RegimeConditionalCalibrator()
+        result = calibrator.calibrate(records)
+        # result["regime_weights"]["bull"] etc.
+    """
+
+    REGIME_LABELS = ["bull", "bear", "sideways"]
+
+    def __init__(self, train_months: int = 6, test_months: int = 1):
+        self.train_months = train_months
+        self.test_months = test_months
+        self.base_calibrator = WalkForwardCalibrator(train_months, test_months)
+
+    def calibrate(self, records: list[dict]) -> dict:
+        """
+        Calibrate separate weight vectors per regime.
+
+        Args:
+            records: Same as WalkForwardCalibrator, plus optional "regime" field
+                     per record (e.g. "bull", "bear", "sideways").
+
+        Returns:
+            Dict with per-regime weights and a combined selector.
+        """
+        # Overall calibration (fallback)
+        overall = self.base_calibrator.calibrate(records)
+
+        # Per-regime calibration
+        regime_weights = {}
+        regime_stats = {}
+
+        for regime in self.REGIME_LABELS:
+            regime_records = [
+                r for r in records
+                if (r.get("regime", "").lower() == regime
+                    or r.get("hmm_state", "").lower() == regime)
+            ]
+
+            if len(regime_records) >= 30:
+                regime_result = self.base_calibrator.calibrate(regime_records)
+                if regime_result.get("status") == "calibrated":
+                    regime_weights[regime] = regime_result["optimized_weights"]
+                    regime_stats[regime] = {
+                        "n_records": len(regime_records),
+                        "n_folds": regime_result["n_folds"],
+                        "avg_test_corr": regime_result.get("avg_test_correlation"),
+                    }
+                else:
+                    regime_weights[regime] = overall.get(
+                        "optimized_weights", EnsembleScorer.DEFAULT_WEIGHTS
+                    )
+                    regime_stats[regime] = {
+                        "n_records": len(regime_records),
+                        "status": "fell_back_to_overall",
+                    }
+            else:
+                regime_weights[regime] = overall.get(
+                    "optimized_weights", EnsembleScorer.DEFAULT_WEIGHTS
+                )
+                regime_stats[regime] = {
+                    "n_records": len(regime_records),
+                    "status": "insufficient_data",
+                }
+
+        result = {
+            "status": "calibrated",
+            "overall_weights": overall.get("optimized_weights", EnsembleScorer.DEFAULT_WEIGHTS),
+            "regime_weights": regime_weights,
+            "regime_stats": regime_stats,
+        }
+
+        logger.info(
+            "regime_calibrator.done",
+            regimes_calibrated=[r for r, s in regime_stats.items() if s.get("n_folds")],
+            regimes_fallback=[r for r, s in regime_stats.items() if not s.get("n_folds")],
+        )
+        return result
+
+    def get_weights_for_regime(self, regime: str, calibration_result: dict) -> dict:
+        """Look up the right weight vector for the current regime."""
+        regime_key = regime.lower() if regime else "sideways"
+        regime_weights = calibration_result.get("regime_weights", {})
+        return regime_weights.get(
+            regime_key,
+            calibration_result.get("overall_weights", EnsembleScorer.DEFAULT_WEIGHTS),
+        )

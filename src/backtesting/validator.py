@@ -5,6 +5,9 @@ D1: Out-of-sample backtest (70/30 temporal split) — prevents overfitting.
 D2: Calibration analysis — score bucket 0-20…80-100 vs actual win rate.
 D3: Model contribution (leave-one-out) — identifies noise models.
 D4: Bootstrap confidence intervals — quantifies metric uncertainty.
+D5: Calibration feedback (isotonic regression) — maps raw scores to calibrated
+    probabilities so the live system acts on accurate win-rate estimates.
+D6: Deflated Sharpe Ratio — corrects for multiple testing at strategy level.
 
 All functions accept a list of signal records with realized returns.
 They work standalone (no database required) when you pass records directly,
@@ -401,6 +404,212 @@ def format_bootstrap_report(result: dict) -> str:
         m = result[metric]
         lines.append(f"{label:<20} {m['point']:>12.4f} {m['lower']:>12.4f} {m['upper']:>12.4f}")
     return "\n".join(lines)
+
+
+# ── D5: Calibration Feedback (Isotonic Regression) ──────────────────────────
+
+class ScoreCalibrator:
+    """
+    Maps raw ensemble scores to calibrated win-rate probabilities using
+    isotonic regression. Unlike bucketed calibration (D2), this produces a
+    smooth, monotonic mapping that can be applied live.
+
+    Usage:
+        calibrator = ScoreCalibrator()
+        result = calibrator.fit(records)
+        calibrated = calibrator.calibrate(75.0)  # → actual probability
+    """
+
+    def __init__(self):
+        self.isotonic = None
+        self.is_fitted = False
+        self.fit_stats = None
+
+    def fit(
+        self,
+        records: list[dict],
+        score_field: str = "ensemble_score",
+        return_field: str = "realized_return",
+    ) -> dict:
+        """
+        Fit isotonic regression: raw_score → P(win).
+
+        Args:
+            records: Historical records with scores and realized returns.
+
+        Returns:
+            Dict with fit diagnostics.
+        """
+        try:
+            from sklearn.isotonic import IsotonicRegression
+        except ImportError:
+            return {"status": "error", "message": "scikit-learn not installed"}
+
+        scores = []
+        outcomes = []
+        for r in records:
+            s = r.get(score_field)
+            ret = r.get(return_field)
+            if s is not None and ret is not None:
+                scores.append(float(s))
+                outcomes.append(1.0 if ret > 0 else 0.0)
+
+        if len(scores) < 30:
+            return {"status": "insufficient_data", "n": len(scores), "min_required": 30}
+
+        X = np.array(scores)
+        y = np.array(outcomes)
+
+        self.isotonic = IsotonicRegression(
+            y_min=0.0, y_max=1.0, out_of_bounds="clip",
+        )
+        self.isotonic.fit(X, y)
+        self.is_fitted = True
+
+        # Diagnostics: check calibration at key score levels
+        test_scores = [20, 40, 55, 65, 75, 85, 95]
+        score_map = {}
+        for ts in test_scores:
+            calibrated = float(self.isotonic.predict([ts])[0])
+            score_map[ts] = round(calibrated, 4)
+
+        # Mean absolute calibration error (on training data)
+        predicted_probs = self.isotonic.predict(X)
+        cal_error = float(np.mean(np.abs(predicted_probs - y)))
+
+        self.fit_stats = {
+            "status": "fitted",
+            "n_samples": len(scores),
+            "calibration_map": score_map,
+            "mean_absolute_error": round(cal_error, 4),
+        }
+
+        logger.info(
+            "calibrator.fitted",
+            n=len(scores),
+            map=score_map,
+            mae=round(cal_error, 4),
+        )
+        return self.fit_stats
+
+    def calibrate(self, raw_score: float) -> float | None:
+        """Map a raw ensemble score to a calibrated win probability."""
+        if not self.is_fitted:
+            return None
+        return float(self.isotonic.predict([raw_score])[0])
+
+    def calibrate_batch(
+        self,
+        signals: list[dict],
+        score_field: str = "ensemble_score",
+    ) -> list[dict]:
+        """Add calibrated_probability to each signal dict."""
+        if not self.is_fitted:
+            return signals
+        for sig in signals:
+            score = sig.get(score_field)
+            if score is not None:
+                sig["calibrated_probability"] = round(self.calibrate(float(score)), 4)
+        return signals
+
+
+def format_calibrator_report(fit_result: dict) -> str:
+    """Human-readable calibrator report."""
+    if fit_result.get("status") != "fitted":
+        return f"Score Calibrator: {fit_result.get('status', 'unknown')}"
+
+    lines = [
+        "SCORE CALIBRATION  (Isotonic Regression: raw score → P(win))",
+        "=" * 55,
+        f"Training samples: {fit_result['n_samples']}",
+        f"Mean absolute error: {fit_result['mean_absolute_error']:.4f}",
+        "",
+        f"{'Raw Score':>12} {'→ P(win)':>12}",
+        "-" * 26,
+    ]
+    for score, prob in fit_result["calibration_map"].items():
+        lines.append(f"{score:>12} {prob:>12.1%}")
+    return "\n".join(lines)
+
+
+# ── D6: Deflated Sharpe Ratio ───────────────────────────────────────────────
+
+def deflated_sharpe_ratio(
+    observed_sharpe: float,
+    n_observations: int,
+    n_strategies_tried: int,
+    skewness: float = 0.0,
+    kurtosis: float = 3.0,
+) -> dict:
+    """
+    D6: Bailey & Lopez de Prado (2014) Deflated Sharpe Ratio.
+
+    Adjusts the observed Sharpe ratio for:
+    - Number of strategies tried (multiple testing)
+    - Non-normality of returns (skewness, kurtosis)
+    - Sample size
+
+    A DSR p-value > 0.05 means the Sharpe is not significantly better
+    than what you'd get by luck given the number of strategies tested.
+
+    Args:
+        observed_sharpe: Annualized Sharpe ratio of the chosen strategy.
+        n_observations: Number of return observations.
+        n_strategies_tried: Total strategies/parameter combos tested.
+        skewness: Return distribution skewness (0 = normal).
+        kurtosis: Return distribution kurtosis (3 = normal).
+
+    Returns:
+        Dict with DSR statistic, p-value, and verdict.
+    """
+    from scipy.stats import norm
+
+    if n_observations < 10 or n_strategies_tried < 1:
+        return {"status": "insufficient_data"}
+
+    # Expected maximum Sharpe under null (Euler-Mascheroni approximation)
+    euler_mascheroni = 0.5772156649
+    if n_strategies_tried > 1:
+        expected_max_sharpe = (
+            norm.ppf(1 - 1 / n_strategies_tried)
+            * (1 - euler_mascheroni)
+            + euler_mascheroni * norm.ppf(1 - 1 / (n_strategies_tried * math.e))
+        )
+    else:
+        expected_max_sharpe = 0.0
+
+    # Standard error of Sharpe ratio (Lo, 2002) with non-normality correction
+    se_sharpe = math.sqrt(
+        (1 + 0.5 * observed_sharpe**2 - skewness * observed_sharpe
+         + ((kurtosis - 3) / 4) * observed_sharpe**2)
+        / (n_observations - 1)
+    )
+
+    if se_sharpe == 0:
+        return {"status": "zero_variance"}
+
+    # DSR test statistic
+    dsr_stat = (observed_sharpe - expected_max_sharpe) / se_sharpe
+    p_value = 1 - norm.cdf(dsr_stat)
+
+    is_significant = p_value < 0.05
+
+    return {
+        "status": "complete",
+        "observed_sharpe": round(observed_sharpe, 4),
+        "expected_max_sharpe": round(expected_max_sharpe, 4),
+        "se_sharpe": round(se_sharpe, 4),
+        "dsr_statistic": round(dsr_stat, 4),
+        "p_value": round(p_value, 4),
+        "n_observations": n_observations,
+        "n_strategies_tried": n_strategies_tried,
+        "is_significant": is_significant,
+        "verdict": (
+            "SIGNIFICANT — Sharpe survives multiple testing correction"
+            if is_significant
+            else "NOT_SIGNIFICANT — Sharpe could be due to luck given strategies tried"
+        ),
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
