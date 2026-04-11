@@ -27,6 +27,7 @@ class MeanVarianceOptimizer:
         tickers: list[str],
         returns_matrix: np.ndarray,
         views: dict[str, float] | None = None,
+        market_caps: dict[str, float] | None = None,
     ) -> dict | None:
         """
         Run mean-variance optimization with optional Black-Litterman views.
@@ -45,7 +46,10 @@ class MeanVarianceOptimizer:
             logger.warning("meanvar.insufficient", n_days=n_days, n_assets=n_assets)
             return None
 
-        mu = np.mean(returns_matrix, axis=0)  # daily expected returns
+        mu_sample = np.mean(returns_matrix, axis=0)
+        # James-Stein shrinkage: shrink sample means toward grand mean
+        # Reduces estimation error for expected returns (Jorion, 1986)
+        mu = self._james_stein_shrink(mu_sample, returns_matrix)
         # Ledoit-Wolf shrinkage: stabilizes covariance estimate for small samples
         lw = LedoitWolf().fit(returns_matrix)
         cov = lw.covariance_
@@ -60,7 +64,7 @@ class MeanVarianceOptimizer:
 
         # --- Black-Litterman adjusted returns (if views provided) ---
         if views:
-            mu_bl = self._black_litterman(tickers, mu_ann, cov_ann, views)
+            mu_bl = self._black_litterman(tickers, mu_ann, cov_ann, views, market_caps)
             if mu_bl is not None:
                 mu_ann = mu_bl
                 logger.info("meanvar.black_litterman_applied", n_views=len(views))
@@ -116,6 +120,23 @@ class MeanVarianceOptimizer:
             min_var_vol=result["min_variance"]["volatility"],
         )
         return result
+
+    def _james_stein_shrink(
+        self, mu_sample: np.ndarray, returns_matrix: np.ndarray
+    ) -> np.ndarray:
+        """James-Stein shrinkage of sample means toward the grand mean."""
+        n_days, p = returns_matrix.shape
+        if p < 3:
+            return mu_sample  # JS requires p >= 3
+        grand_mean = np.mean(mu_sample)
+        cov_mu = np.cov(returns_matrix, rowvar=False) / n_days
+        diff = mu_sample - grand_mean
+        denom = float(diff @ cov_mu @ diff) if np.any(diff != 0) else 1e-10
+        # Shrinkage intensity: 1 - (p-2)/n * trace(cov_mu) / ||mu - grand_mean||^2
+        shrinkage = max(0.0, 1.0 - (p - 2) * np.trace(cov_mu) / max(denom, 1e-10))
+        mu_js = grand_mean + shrinkage * diff
+        logger.debug("meanvar.james_stein", shrinkage=round(shrinkage, 4))
+        return mu_js
 
     def _min_variance(self, cov: np.ndarray, n: int) -> np.ndarray:
         w0 = np.ones(n) / n
@@ -176,18 +197,18 @@ class MeanVarianceOptimizer:
         mu_ann: np.ndarray,
         cov_ann: np.ndarray,
         views: dict[str, float],
+        market_caps: dict[str, float] | None = None,
     ) -> np.ndarray | None:
         """
         Black-Litterman model: blend equilibrium returns with investor views.
-
-        Uses market-cap-weighted equilibrium as prior (approximated by equal weight
-        since we don't have market caps), then tilts toward conviction-based views.
 
         Args:
             tickers: asset labels
             mu_ann: annualized sample mean returns (N,)
             cov_ann: annualized covariance matrix (N, N)
             views: ticker -> expected excess return (annualized)
+            market_caps: ticker -> market capitalization for prior weights.
+                         Falls back to equal weight if unavailable.
 
         Returns:
             BL-adjusted expected returns (N,) or None if no valid views.
@@ -207,12 +228,21 @@ class MeanVarianceOptimizer:
             P[row, idx] = 1.0
             Q[row] = ret
 
-        # Risk aversion parameter (delta) implied by market
-        delta = 2.5  # standard assumption
+        # Market-cap weights for equilibrium prior (or equal weight fallback)
+        if market_caps:
+            caps = np.array([market_caps.get(t, 0.0) for t in tickers])
+            total_cap = caps.sum()
+            w_mkt = caps / total_cap if total_cap > 0 else np.ones(n) / n
+        else:
+            w_mkt = np.ones(n) / n
+
+        # Risk aversion implied from market: delta = (E[R_m] - R_f) / sigma_m^2
+        port_var = float(w_mkt @ cov_ann @ w_mkt)
+        port_ret = float(w_mkt @ mu_ann)
+        rf_ann = self.rf * 252
+        delta = (port_ret - rf_ann) / port_var if port_var > 0 else 2.5
 
         # Equilibrium returns: pi = delta * Sigma * w_mkt
-        # Approximate market weights as equal weight (no market cap data)
-        w_mkt = np.ones(n) / n
         pi = delta * cov_ann @ w_mkt
 
         # Tau: scaling factor for uncertainty in equilibrium (typical 0.025-0.05)

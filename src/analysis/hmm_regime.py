@@ -90,7 +90,7 @@ class HMMRegimeDetector:
                             verbose=False,
                         )
                         m.fit(features)
-                        log_ll = m.score(features) * len(features)
+                        log_ll = m.score(features)
                         # BIC = -2*LL + k*ln(n_obs)
                         # k = n_states^2 + 2*n_states*n_features - 1 (transitions + means + covs)
                         n_features = features.shape[1]

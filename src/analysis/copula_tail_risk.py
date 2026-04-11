@@ -125,12 +125,15 @@ class CopulaTailRisk:
                 return 1e10
             quad = (t1 ** 2 - 2 * rho * t1 * t2 + t2 ** 2) / det
             n = len(t1)
-            ll = (
-                n * np.log(1 / (2 * np.pi * np.sqrt(det)))
+            # Bivariate t-copula log-likelihood:
+            # log c = log f_joint(t1,t2) - log f_marg(t1) - log f_marg(t2)
+            log_joint = (
+                n * (-0.5 * np.log(det))
                 + (-(nu + 2) / 2) * np.sum(np.log(1 + quad / nu))
-                - (-(nu + 1) / 2) * np.sum(np.log(1 + t1 ** 2 / nu))
-                - (-(nu + 1) / 2) * np.sum(np.log(1 + t2 ** 2 / nu))
             )
+            log_marg1 = (-(nu + 1) / 2) * np.sum(np.log(1 + t1 ** 2 / nu))
+            log_marg2 = (-(nu + 1) / 2) * np.sum(np.log(1 + t2 ** 2 / nu))
+            ll = log_joint - log_marg1 - log_marg2
             return -ll
 
         try:

@@ -86,7 +86,7 @@ class BayesianDecayAnalyzer:
         if np.sum(pos_mask) < 3:
             return self._no_signal(direction, n_days)
 
-        # Log-linear regression: log|AR(t)| = log(A) - lambda*t
+        # Log-linear regression for MLE initialization
         log_ar = np.log(smoothed[pos_mask])
         t_pos = s_days[pos_mask]
         X = np.column_stack([np.ones(len(t_pos)), t_pos])
@@ -94,19 +94,12 @@ class BayesianDecayAnalyzer:
         mle_A = float(np.exp(coeffs[0]))
         mle_lambda = max(-coeffs[1], 0.001)
 
-        # Bayesian update: Gamma prior on lambda
-        a0, b0 = self.prior_strength, self.prior_strength / self.prior_lambda
-        a_post = a0 + len(t_pos) / 2
-        ss = np.sum(t_pos * smoothed[pos_mask] ** 2) / (2 * max(mle_A ** 2, 1e-10))
-        b_post = b0 + ss
-
-        post_lambda = a_post / b_post
+        # MCMC posterior sampling for (A, lambda, sigma)
+        # Model: |AR(t)| ~ N(A * exp(-lambda * t), sigma^2)
+        post_lambda, mle_A, hl_samples, samples = self._mcmc_posterior(
+            smoothed[pos_mask], t_pos, mle_A, mle_lambda
+        )
         post_half_life = float(np.log(2) / post_lambda)
-
-        # Posterior samples for credible intervals
-        samples = self.rng.gamma(a_post, 1 / b_post, 5000)
-        samples = np.maximum(samples, 0.001)
-        hl_samples = np.log(2) / samples
 
         ci_lambda = (round(float(np.percentile(samples, 2.5)), 4),
                      round(float(np.percentile(samples, 97.5)), 4))
@@ -151,6 +144,103 @@ class BayesianDecayAnalyzer:
             total_car=round(total_car, 6), quality=result["decay_quality"],
         )
         return result
+
+    def _mcmc_posterior(
+        self,
+        obs: np.ndarray,
+        t: np.ndarray,
+        init_A: float,
+        init_lambda: float,
+    ) -> tuple[float, float, np.ndarray, np.ndarray]:
+        """
+        MCMC sampling of exponential decay parameters via emcee.
+
+        Model: obs[i] ~ N(A * exp(-lambda * t[i]), sigma^2)
+        Priors: A ~ HalfNormal(scale=init_A*3), lambda ~ Gamma(prior_strength, prior_lambda),
+                sigma ~ HalfCauchy(scale=0.01)
+
+        Falls back to MLE + Gamma approximation if emcee unavailable.
+        """
+        try:
+            import emcee
+        except ImportError:
+            # Fallback: use Gamma posterior approximation (original approach, corrected)
+            return self._gamma_fallback(obs, t, init_A, init_lambda)
+
+        prior_a = self.prior_strength
+        prior_rate = self.prior_strength / self.prior_lambda
+        init_sigma = float(np.std(obs - init_A * np.exp(-init_lambda * t)))
+
+        def log_prior(theta):
+            A, lam, sig = theta
+            if A <= 0 or lam <= 0 or sig <= 0:
+                return -np.inf
+            # Gamma prior on lambda
+            lp = (prior_a - 1) * np.log(lam) - prior_rate * lam
+            # HalfNormal on A
+            lp += -0.5 * (A / (init_A * 3)) ** 2
+            # HalfCauchy on sigma
+            lp += -np.log(1 + (sig / 0.01) ** 2)
+            return lp
+
+        def log_likelihood(theta):
+            A, lam, sig = theta
+            model = A * np.exp(-lam * t)
+            resid = obs - model
+            return -0.5 * np.sum((resid / sig) ** 2) - len(obs) * np.log(sig)
+
+        def log_prob(theta):
+            lp = log_prior(theta)
+            if not np.isfinite(lp):
+                return -np.inf
+            return lp + log_likelihood(theta)
+
+        ndim, nwalkers = 3, 16
+        p0 = np.array([init_A, init_lambda, max(init_sigma, 0.001)])
+        # Initialize walkers in a small ball around MLE
+        pos = p0 + 1e-4 * self.rng.standard_normal((nwalkers, ndim))
+        pos[:, 0] = np.abs(pos[:, 0])  # A > 0
+        pos[:, 1] = np.abs(pos[:, 1])  # lambda > 0
+        pos[:, 2] = np.abs(pos[:, 2])  # sigma > 0
+
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob)
+        sampler.run_mcmc(pos, 1000, progress=False)
+
+        # Discard burn-in, thin
+        flat = sampler.get_chain(discard=500, thin=5, flat=True)
+        A_samples = flat[:, 0]
+        lambda_samples = flat[:, 1]
+
+        post_lambda = float(np.median(lambda_samples))
+        post_A = float(np.median(A_samples))
+        hl_samples = np.log(2) / np.maximum(lambda_samples, 0.001)
+
+        return post_lambda, post_A, hl_samples, lambda_samples
+
+    def _gamma_fallback(
+        self,
+        obs: np.ndarray,
+        t: np.ndarray,
+        init_A: float,
+        init_lambda: float,
+    ) -> tuple[float, float, np.ndarray, np.ndarray]:
+        """Corrected Gamma conjugate approximation when emcee not available."""
+        a0 = self.prior_strength
+        b0 = self.prior_strength / self.prior_lambda
+        n = len(obs)
+        # Sufficient statistic: sum of squared residuals weighted by time
+        model = init_A * np.exp(-init_lambda * t)
+        residuals = obs - model
+        mse = float(np.mean(residuals ** 2))
+        # Posterior shape/rate for lambda
+        a_post = a0 + n / 2
+        b_post = b0 + n * mse / (2 * max(init_A ** 2, 1e-10))
+
+        post_lambda = float(a_post / b_post)
+        samples = self.rng.gamma(a_post, 1 / b_post, 5000)
+        samples = np.maximum(samples, 0.001)
+        hl_samples = np.log(2) / samples
+        return post_lambda, init_A, hl_samples, samples
 
     def _no_signal(self, direction: str, n_days: int) -> dict:
         return {

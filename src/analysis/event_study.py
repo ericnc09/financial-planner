@@ -136,7 +136,15 @@ class EventStudyAnalyzer:
         # n_post = actual number of event-window observations (not hardcoded horizon)
         n_post = len(evt_stock)
         t_stat = float(car[-1]) / (sigma_est * np.sqrt(n_post)) if sigma_est > 0 and n_post > 0 else 0
-        p_value = float(2 * (1 - stats.t.cdf(abs(t_stat), df=len(est_stock) - 2)))
+        p_value_param = float(2 * (1 - stats.t.cdf(abs(t_stat), df=len(est_stock) - 2)))
+
+        # Bootstrap significance test (distribution-free, robust to non-normality)
+        p_value_boot = self._bootstrap_test(
+            est_residuals, abnormal_returns, n_boot=2000
+        )
+
+        # Use the more conservative (higher) p-value
+        p_value = max(p_value_param, p_value_boot)
 
         result = {
             "ticker": ticker,
@@ -151,6 +159,8 @@ class EventStudyAnalyzer:
             "car_20d": car_20d,
             "t_statistic": round(t_stat, 4),
             "p_value": round(p_value, 4),
+            "p_value_parametric": round(p_value_param, 4),
+            "p_value_bootstrap": round(p_value_boot, 4),
             "is_significant": p_value < 0.05,
             "daily_cars": daily_cars,
             "days": days,
@@ -254,6 +264,32 @@ class EventStudyAnalyzer:
             mean_car_20d=overall["car_20d"].get("mean"),
         )
         return aggregate
+
+    def _bootstrap_test(
+        self,
+        est_residuals: np.ndarray,
+        abnormal_returns: np.ndarray,
+        n_boot: int = 2000,
+    ) -> float:
+        """
+        Bootstrap significance test for CAR.
+
+        Resamples from estimation-window residuals to build a null distribution
+        of CARs, then computes the two-sided p-value. Robust to non-normal
+        return distributions (fat tails, skewness).
+        """
+        observed_car = float(np.sum(abnormal_returns))
+        n_event = len(abnormal_returns)
+        rng = np.random.default_rng(42)
+
+        null_cars = np.empty(n_boot)
+        for b in range(n_boot):
+            pseudo_ar = rng.choice(est_residuals, size=n_event, replace=True)
+            null_cars[b] = np.sum(pseudo_ar)
+
+        # Two-sided p-value: fraction of null CARs more extreme than observed
+        p_value = float(np.mean(np.abs(null_cars) >= abs(observed_car)))
+        return max(p_value, 1.0 / n_boot)  # floor at 1/n_boot
 
     def _find_event_index(self, dates: list, event_date: datetime) -> int | None:
         """Find the closest trading date index on or after event_date."""

@@ -20,6 +20,8 @@ class MonteCarloSimulator:
         self,
         closes: np.ndarray,
         horizons: list[int] | None = None,
+        garch_forecast: dict | None = None,
+        regime_params: dict | None = None,
     ) -> dict | None:
         """
         Run GBM Monte Carlo on historical close prices.
@@ -27,6 +29,10 @@ class MonteCarloSimulator:
         Args:
             closes: Array of historical closing prices (oldest first).
             horizons: Forecast horizons in trading days. Default [21, 63, 126] (~1/3/6 months).
+            garch_forecast: Optional GARCH output dict. When provided, uses
+                            conditional volatility instead of historical sigma.
+            regime_params: Optional dict with regime-specific {"mu": ..., "sigma": ...}
+                           from HMM. Overrides historical estimates.
 
         Returns:
             Dict with per-horizon results: percentiles, probability of profit, expected return.
@@ -48,10 +54,27 @@ class MonteCarloSimulator:
             logger.warning("monte_carlo.zero_volatility")
             return None
 
+        # Override with GARCH conditional vol if available
+        vol_source = "historical"
+        if garch_forecast and not garch_forecast.get("is_fallback"):
+            garch_vol_daily = garch_forecast.get("current_conditional_vol_annual", 0)
+            if garch_vol_daily > 0:
+                sigma = garch_vol_daily / np.sqrt(252)  # convert annual to daily
+                vol_source = "garch"
+
+        # Override with regime-specific params if available
+        if regime_params:
+            if "mu" in regime_params:
+                mu = regime_params["mu"]
+            if "sigma" in regime_params:
+                sigma = regime_params["sigma"]
+                vol_source = "regime"
+
         results = {
             "current_price": current_price,
             "annual_drift": round(float(mu * 252), 4),
             "annual_volatility": round(float(sigma * np.sqrt(252)), 4),
+            "volatility_source": vol_source,
             "n_simulations": self.n_simulations,
             "horizons": {},
         }
@@ -86,7 +109,7 @@ class MonteCarloSimulator:
                 "percentiles": percentiles,
                 "probability_of_profit": round(float(np.mean(terminal_prices > current_price)), 4),
                 "expected_return": round(float(np.mean(returns_pct)), 4),
-                "max_drawdown_median": round(float(self._median_max_drawdown(price_paths[:, :h])), 4),
+                "max_drawdown_95": round(float(self._p95_max_drawdown(price_paths[:, :h])), 4),
                 "value_at_risk_95": round(float(np.percentile(returns_pct, 5)), 4),
             }
 
@@ -98,9 +121,9 @@ class MonteCarloSimulator:
         )
         return results
 
-    def _median_max_drawdown(self, paths: np.ndarray) -> float:
-        """Compute median max drawdown across all simulation paths."""
+    def _p95_max_drawdown(self, paths: np.ndarray) -> float:
+        """Compute 95th percentile max drawdown across all simulation paths."""
         running_max = np.maximum.accumulate(paths, axis=1)
         drawdowns = (running_max - paths) / running_max
         max_dd_per_path = np.max(drawdowns, axis=1)
-        return float(np.median(max_dd_per_path))
+        return float(np.percentile(max_dd_per_path, 95))
