@@ -209,6 +209,12 @@ export interface BacktestResult {
   unfiltered_metrics: Record<string, PeriodMetrics>;
 }
 
+export interface PriceHistoryData {
+  ticker: string;
+  dates: string[];
+  closes: number[];
+}
+
 export interface DashboardData {
   signals: Signal[];
   macro: MacroData | null;

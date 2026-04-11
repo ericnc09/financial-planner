@@ -1,4 +1,4 @@
-import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData, MeanVarianceData, EnsembleScoreData, BacktestResult } from '../types';
+import type { DashboardData, Signal, MacroData, TickerAnalysis, HMMData, ExtendedMacroData, MeanVarianceData, EnsembleScoreData, BacktestResult, PriceHistoryData } from '../types';
 
 const BASE = '/api';
 
@@ -30,4 +30,6 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ start_date: startDate, end_date: endDate, conviction_threshold: threshold }),
     }).then(r => r.json()),
+  getPriceHistory: (ticker: string, days = 365) =>
+    fetchJson<PriceHistoryData>(`/prices/${ticker}?days=${days}`),
 };

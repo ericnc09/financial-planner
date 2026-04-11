@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { Component, useState } from 'react';
 import type { DashboardData } from '../types';
 import { MacroGauge } from './MacroGauge';
 import { ExtendedMacro } from './ExtendedMacro';
@@ -7,6 +7,16 @@ import { TickerDetail } from './TickerDetail';
 import { MeanVarianceChart } from './MeanVarianceChart';
 import { PerformancePanel } from './PerformancePanel';
 import { BacktestPanel } from './BacktestPanel';
+import { StockPriceChart } from './StockPriceChart';
+
+class SafeCard extends Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
 
 interface Props {
   data: DashboardData;
@@ -28,6 +38,7 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
   const { signals, macro, extended_macro } = data;
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
 
+  const uniqueTickers = [...new Set(signals.map(s => s.ticker))].sort();
   const passingSignals = signals.filter(s => s.passes_threshold).length;
   const buySignals = signals.filter(s => s.direction === 'buy').length;
   const sellSignals = signals.filter(s => s.direction === 'sell').length;
@@ -85,8 +96,11 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
       {/* Backtest Engine */}
       <BacktestPanel />
 
+      {/* Stock Price History */}
+      {uniqueTickers.length > 0 && <StockPriceChart tickers={uniqueTickers} />}
+
       {/* Portfolio Optimization */}
-      <MeanVarianceChart />
+      <SafeCard><MeanVarianceChart /></SafeCard>
 
       {/* Ticker Analysis Detail Panel */}
       {selectedTicker && (

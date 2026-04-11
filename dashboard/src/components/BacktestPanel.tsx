@@ -22,11 +22,14 @@ export const BacktestPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const runBacktest = async () => {
+  const runBacktestWithDates = async (start: string, end: string, thresh: number) => {
+    setStartDate(start);
+    setEndDate(end);
+    setThreshold(thresh);
     setLoading(true);
     setError(null);
     try {
-      const data = await api.runBacktest(startDate, endDate, threshold);
+      const data = await api.runBacktest(start, end, thresh);
       setResult(data);
     } catch (e: any) {
       setError(e.message || 'Backtest failed');
@@ -34,6 +37,8 @@ export const BacktestPanel: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const runBacktest = () => runBacktestWithDates(startDate, endDate, threshold);
 
   const renderEquityCurve = (res: BacktestResult) => {
     const periods = HOLD_PERIODS.filter(p => res.filtered_metrics[p] || res.unfiltered_metrics[p]);
@@ -149,6 +154,17 @@ export const BacktestPanel: React.FC = () => {
           color: '#fff', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
         }}>
           {loading ? 'Running...' : 'Run Backtest'}
+        </button>
+        <button onClick={() => {
+          const now = new Date();
+          const thirtyAgo = new Date(now.getTime() - 30 * 86400000);
+          runBacktestWithDates(thirtyAgo.toISOString().slice(0, 10), now.toISOString().slice(0, 10), threshold);
+        }} disabled={loading} style={{
+          padding: '8px 20px', borderRadius: 8, border: '1px solid #30363d',
+          background: loading ? '#30363d' : '#21262d', color: '#c9d1d9',
+          cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13,
+        }}>
+          Last 30 Days
         </button>
       </div>
 

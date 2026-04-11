@@ -1057,6 +1057,26 @@ def export_analysis(ticker: str, format: str = Query(default="csv")):
                    headers={"Content-Disposition": f"attachment; filename={ticker}_analysis.csv"})
 
 
+class PriceHistoryResponse(BaseModel):
+    ticker: str
+    dates: list[str]
+    closes: list[float]
+
+
+@app.get("/api/prices/{ticker}", response_model=PriceHistoryResponse)
+async def get_price_history(ticker: str, days: int = Query(default=365, ge=7, le=730)):
+    from src.clients.yahoo import YahooClient
+
+    yahoo = YahooClient()
+    data = await yahoo.get_price_history(ticker.upper(), days=days)
+    if data is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"No price data for {ticker}")
+    dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d) for d in data["dates"]]
+    closes = [float(c) for c in data["closes"]]
+    return PriceHistoryResponse(ticker=ticker.upper(), dates=dates, closes=closes)
+
+
 @app.post("/api/backtest", response_model=BacktestResponse)
 async def run_backtest(req: BacktestRequest):
     from src.backtesting.backtester import Backtester

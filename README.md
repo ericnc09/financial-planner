@@ -171,6 +171,7 @@ All data sources are **free and require no paid subscriptions** (FRED key is fre
 | `/api/macro` | GET | Latest macro regime snapshot |
 | `/api/macro/extended` | GET | Extended macro (VIX, sentiment, M2, etc.) |
 | `/api/macro/history` | GET | Historical macro data |
+| `/api/prices/{ticker}` | GET | Historical price data for a ticker (`days` param: 7–730, default 365) |
 | `/api/backtest` | POST | Run backtest with `start_date`, `end_date`, `conviction_threshold` |
 | `/api/performance/summary` | GET | Signal performance tracking (win rates, returns) |
 | `/api/performance/update` | POST | Trigger performance update for all signals |
@@ -190,7 +191,8 @@ The React dashboard provides:
 - **Macro Gauge** — SVG regime indicator with yield spread, unemployment, CPI, fed funds.
 - **Extended Macro** — VIX, consumer sentiment, M2, housing starts, industrial production.
 - **Performance Panel** — Win rates, average returns by direction/source/conviction bucket, top winners/losers.
-- **Backtest Engine** — Date range picker, conviction slider, equity curve, filtered vs unfiltered metrics comparison.
+- **Backtest Engine** — Date range picker, conviction slider, equity curve, filtered vs unfiltered metrics comparison. Includes "Last 30 Days" quick-run button for instant recent-period analysis.
+- **Stock Price History** — Interactive price chart for any analyzed ticker. Dropdown to select from all signal tickers, time range buttons (30D / 90D / 1Y / 2Y), SVG line chart color-coded green/red by period performance, with stats row (current price, change %, period high/low).
 - **Mean-Variance Chart** — Efficient frontier, max-Sharpe/min-variance allocation bars, risk contribution.
 - **Ticker Detail** (click any signal) — Full model breakdown:
   - Ensemble score banner with recommendation
@@ -260,6 +262,7 @@ financial-planner/
 │   └── src/
 │       ├── components/
 │       │   ├── Dashboard.tsx          # Main layout
+│       │   ├── StockPriceChart.tsx     # Historical price chart with ticker/range selector
 │       │   ├── SignalTable.tsx         # Signal table with export
 │       │   ├── MacroGauge.tsx          # SVG regime gauge
 │       │   ├── ExtendedMacro.tsx       # Extended macro panel
@@ -351,6 +354,7 @@ This system implements institutional-grade statistical safeguards to eliminate f
 - [x] Deflated Sharpe Ratio (D6) — multiple testing correction at strategy level
 - [x] Isotonic regression calibration (D5) — live score → P(win) mapping
 - [x] XGBoost overhaul: nested CV, permutation feature selection, sample-size guards
+- [x] Stock price history visualization — per-ticker SVG chart with time range selector and performance stats
 - [ ] Scheduled pipeline + historical backfill (cron + 6-12 month SEC EDGAR archives)
 - [ ] Network/graph analysis of insider co-trading patterns
 - [ ] NLP sentiment on 10-K/10-Q filings (Loughran-McDonald wordlists)

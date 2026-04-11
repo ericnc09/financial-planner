@@ -2,6 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "api",
+      "runtimeExecutable": "/Users/eric/miniconda3/bin/python3",
+      "runtimeArgs": ["-m", "uvicorn", "src.api.api:app", "--port", "8000"],
+      "port": 8000,
+      "cwd": "/Users/eric/financial-planner"
+    },
+    {
       "name": "dashboard",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["/Users/eric/financial-planner/dashboard/start.sh"],
