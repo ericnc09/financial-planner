@@ -9,6 +9,7 @@ import structlog
 from config.settings import Settings
 from src.models.database import (
     ConvictionScore,
+    Enrichment,
     SmartMoneyEvent,
     get_engine,
     get_session_factory,
@@ -42,14 +43,31 @@ class BacktestResult:
 
 class Backtester:
     HOLD_PERIODS = [7, 14, 30, 60, 90]
-    # Transaction costs: 10bps slippage + 5bps commission per side = 30bps round-trip
-    COST_PER_TRADE = 0.0030  # 30bps round-trip (entry + exit)
+    # Default fallback transaction cost (used when enrichment is unavailable)
+    DEFAULT_COST_PER_TRADE = 0.0030  # 30bps round-trip
+    # Minimum average daily volume to include a signal (shares/day)
+    MIN_AVG_VOLUME = 100_000
 
-    def __init__(self, settings: Settings, price_client=None):
+    def __init__(self, settings: Settings, price_client=None, execution_delay_days: int = 1):
         self.settings = settings
         self.price_client = price_client
+        self.execution_delay_days = execution_delay_days
         engine = get_engine(settings.database_url)
         self.session_factory = get_session_factory(engine)
+
+    @staticmethod
+    def _estimate_transaction_cost(avg_volume: float | None, market_cap: float | None) -> float:
+        """Estimate round-trip transaction cost based on liquidity tier."""
+        if market_cap and market_cap > 50e9:
+            return 0.0010  # 10bps — mega-cap
+        elif market_cap and market_cap > 10e9:
+            return 0.0020  # 20bps — large-cap
+        elif market_cap and market_cap > 2e9:
+            return 0.0030  # 30bps — mid-cap
+        elif avg_volume and avg_volume > 500_000:
+            return 0.0040  # 40bps — small-cap with decent volume
+        else:
+            return 0.0060  # 60bps — illiquid small/micro-cap
 
     async def run(
         self,
@@ -59,10 +77,11 @@ class Backtester:
     ) -> BacktestResult:
         session = self.session_factory()
         try:
-            # Get all events with conviction scores in range
+            # Get all events with conviction scores and enrichment in range
             events = (
-                session.query(SmartMoneyEvent, ConvictionScore)
+                session.query(SmartMoneyEvent, ConvictionScore, Enrichment)
                 .join(ConvictionScore, SmartMoneyEvent.id == ConvictionScore.event_id)
+                .outerjoin(Enrichment, SmartMoneyEvent.id == Enrichment.event_id)
                 .filter(
                     SmartMoneyEvent.trade_date >= datetime.strptime(start_date, "%Y-%m-%d"),
                     SmartMoneyEvent.trade_date <= datetime.strptime(end_date, "%Y-%m-%d"),
@@ -82,8 +101,8 @@ class Backtester:
             )
 
         # Separate filtered vs unfiltered
-        all_events = [(e, cs) for e, cs in events]
-        filtered = [(e, cs) for e, cs in events if cs.conviction >= conviction_threshold]
+        all_events = [(e, cs, enr) for e, cs, enr in events]
+        filtered = [(e, cs, enr) for e, cs, enr in events if cs.conviction >= conviction_threshold]
 
         logger.info(
             "backtester.loaded_events",
@@ -120,15 +139,28 @@ class Backtester:
     ) -> list[float]:
         """For each event, get price at signal and price after hold_days."""
         returns = []
+        illiquid_skipped = 0
         sem = asyncio.Semaphore(5)
 
-        async def _get_return(event, _cs):
+        async def _get_return(event, _cs, enrichment):
+            nonlocal illiquid_skipped
             async with sem:
                 try:
+                    # Liquidity gate: skip signals on stocks with insufficient
+                    # average daily volume to trade at realistic sizes.
+                    avg_vol = getattr(enrichment, "avg_volume_30d", None) if enrichment else None
+                    if avg_vol is not None and avg_vol < self.MIN_AVG_VOLUME:
+                        logger.debug("backtester.illiquid_skip", ticker=event.ticker, avg_volume=avg_vol)
+                        illiquid_skipped += 1
+                        return None
+
                     # Use disclosure_date as entry point (when we actually
                     # learn about the trade) to avoid look-ahead bias.
                     # Fall back to trade_date only if disclosure_date missing.
-                    entry_date = getattr(event, "disclosure_date", None) or event.trade_date
+                    signal_date = getattr(event, "disclosure_date", None) or event.trade_date
+                    # Add execution delay: can't trade until next trading day
+                    # since Form 4 filings typically arrive after market close.
+                    entry_date = signal_date + timedelta(days=self.execution_delay_days)
                     exit_date = entry_date + timedelta(days=hold_days)
                     start_str = entry_date.strftime("%Y-%m-%d")
                     end_str = exit_date.strftime("%Y-%m-%d")
@@ -159,8 +191,10 @@ class Backtester:
                     # Invert return for sells
                     if event.direction.value == "sell":
                         ret = -ret
-                    # Deduct round-trip transaction costs (slippage + commission)
-                    ret -= self.COST_PER_TRADE
+                    # Dynamic transaction costs based on stock liquidity tier
+                    mkt_cap = getattr(enrichment, "market_cap", None) if enrichment else None
+                    cost = self._estimate_transaction_cost(avg_vol, mkt_cap)
+                    ret -= cost
                     return ret
                 except Exception as e:
                     logger.debug(
@@ -170,11 +204,14 @@ class Backtester:
                     )
                     return None
 
-        tasks = [_get_return(e, cs) for e, cs in events]
+        tasks = [_get_return(e, cs, enr) for e, cs, enr in events]
         for coro in asyncio.as_completed(tasks):
             ret = await coro
             if ret is not None:
                 returns.append(ret)
+
+        if illiquid_skipped:
+            logger.info("backtester.illiquid_skipped", count=illiquid_skipped, hold_days=hold_days)
 
         return returns
 
@@ -257,8 +294,9 @@ class Backtester:
         session = self.session_factory()
         try:
             events = (
-                session.query(SmartMoneyEvent, ConvictionScore)
+                session.query(SmartMoneyEvent, ConvictionScore, Enrichment)
                 .join(ConvictionScore, SmartMoneyEvent.id == ConvictionScore.event_id)
+                .outerjoin(Enrichment, SmartMoneyEvent.id == Enrichment.event_id)
                 .filter(
                     SmartMoneyEvent.trade_date >= datetime.strptime(start_date, "%Y-%m-%d"),
                     SmartMoneyEvent.trade_date <= datetime.strptime(end_date, "%Y-%m-%d"),
@@ -277,8 +315,8 @@ class Backtester:
         train_events = events[:split_idx]
         test_events = events[split_idx:]
 
-        train_filtered = [(e, cs) for e, cs in train_events if cs.conviction >= conviction_threshold]
-        test_filtered = [(e, cs) for e, cs in test_events if cs.conviction >= conviction_threshold]
+        train_filtered = [(e, cs, enr) for e, cs, enr in train_events if cs.conviction >= conviction_threshold]
+        test_filtered = [(e, cs, enr) for e, cs, enr in test_events if cs.conviction >= conviction_threshold]
 
         train_date_range = (
             train_events[0][0].trade_date.strftime("%Y-%m-%d"),

@@ -6,10 +6,9 @@ Replaces arbitrary hand-tuned scoring with data-driven feature weights.
 
 Bias-reduction measures:
 - Sample size guards: 200+ for XGBoost, falls back to L1-logistic for <200
-- Nested cross-validation: outer 5-fold temporal for evaluation, inner 3-fold
-  for hyperparameter tuning (prevents optimistic AUC/accuracy reporting)
-- Permutation importance feature selection: drops features less important
-  than a random noise column
+- Per-fold feature selection: permutation importance runs inside each CV fold
+  (not on full data) to prevent feature selection leakage
+- Majority-vote feature consensus: only features selected in >50% of folds survive
 - Null model benchmark: compares against random baseline to detect overfitting
 """
 
@@ -152,34 +151,77 @@ class XGBoostSignalClassifier:
                 eval_metric="logloss",
             )
 
-        # ── Step 2: Feature selection via permutation importance ──
-        # Add a noise column — features less important than noise are dropped
-        rng = np.random.default_rng(42)
-        noise_col = rng.standard_normal(n_samples)
-        X_with_noise = np.column_stack([X, noise_col])
-        feature_names_with_noise = FEATURE_COLS + ["_random_noise_"]
+        # ── Step 2: Nested CV with per-fold feature selection ──
+        # Feature selection is done INSIDE each CV fold to prevent leakage:
+        # fitting on all data first would bias which features survive toward
+        # the full sample, inflating CV AUC estimates.
+        n_splits = min(5, max(2, n_samples // 40))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
 
-        # Quick fit on all data for feature selection
-        self.model.fit(X_with_noise, y)
-        perm_result = permutation_importance(
-            self.model, X_with_noise, y,
-            n_repeats=10, random_state=42, scoring="roc_auc",
-        )
-        noise_importance = perm_result.importances_mean[-1]
+        cv_scores = []
+        per_fold_features = []  # track which features each fold selects
 
-        # Keep features more important than the noise column
+        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
+            X_train_fold, X_test_fold = X[train_idx], X[test_idx]
+            y_train_fold, y_test_fold = y[train_idx], y[test_idx]
+
+            # Feature selection on training fold only
+            rng = np.random.default_rng(42 + fold_idx)
+            noise_col = rng.standard_normal(len(X_train_fold))
+            X_train_noise = np.column_stack([X_train_fold, noise_col])
+
+            fold_model = self._make_model()
+            fold_model.fit(X_train_noise, y_train_fold)
+            perm_result = permutation_importance(
+                fold_model, X_train_noise, y_train_fold,
+                n_repeats=10, random_state=42, scoring="roc_auc",
+            )
+            noise_importance = perm_result.importances_mean[-1]
+
+            # Keep features more important than the noise column
+            fold_selected = []
+            fold_indices = []
+            for i, feat in enumerate(FEATURE_COLS):
+                if perm_result.importances_mean[i] > noise_importance:
+                    fold_selected.append(feat)
+                    fold_indices.append(i)
+
+            if len(fold_selected) < 3:
+                ranked = np.argsort(perm_result.importances_mean[:-1])[::-1]
+                fold_indices = ranked[:8].tolist()
+                fold_selected = [FEATURE_COLS[i] for i in fold_indices]
+
+            per_fold_features.append(set(fold_selected))
+
+            # Evaluate on test fold with selected features
+            fold_model2 = self._make_model()
+            fold_model2.fit(X_train_fold[:, fold_indices], y_train_fold)
+            y_prob = fold_model2.predict_proba(X_test_fold[:, fold_indices])[:, 1]
+            if len(np.unique(y_test_fold)) > 1:
+                fold_auc = roc_auc_score(y_test_fold, y_prob)
+            else:
+                fold_auc = 0.5
+            cv_scores.append(fold_auc)
+
+        cv_auc_mean = float(np.mean(cv_scores))
+        cv_auc_std = float(np.std(cv_scores))
+
+        # Final feature selection: keep features selected in majority of folds
+        from collections import Counter
+        feat_counts = Counter(f for fs in per_fold_features for f in fs)
+        majority_threshold = len(per_fold_features) / 2
         self.selected_features = []
         selected_indices = []
         for i, feat in enumerate(FEATURE_COLS):
-            if perm_result.importances_mean[i] > noise_importance:
+            if feat_counts.get(feat, 0) >= majority_threshold:
                 self.selected_features.append(feat)
                 selected_indices.append(i)
 
         if len(self.selected_features) < 3:
-            # Too few features survived — use top 8 by importance
-            ranked = np.argsort(perm_result.importances_mean[:-1])[::-1]
-            selected_indices = ranked[:8].tolist()
-            self.selected_features = [FEATURE_COLS[i] for i in selected_indices]
+            # Fall back to features selected in at least one fold, ranked by count
+            ranked_feats = feat_counts.most_common(8)
+            self.selected_features = [f for f, _ in ranked_feats]
+            selected_indices = [FEATURE_COLS.index(f) for f in self.selected_features]
 
         X_selected = X[:, selected_indices]
         logger.info(
@@ -187,38 +229,8 @@ class XGBoostSignalClassifier:
             n_original=len(FEATURE_COLS),
             n_selected=len(self.selected_features),
             dropped=[f for f in FEATURE_COLS if f not in self.selected_features],
-            noise_threshold=round(float(noise_importance), 4),
+            fold_agreement={f: c for f, c in feat_counts.most_common()},
         )
-
-        # ── Step 3: Nested cross-validation (temporal splits) ──
-        n_splits = min(5, max(2, n_samples // 40))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-
-        # Rebuild model with selected features
-        if self.model_type == "logistic":
-            self.model = LogisticRegression(
-                penalty="l1", solver="saga", C=1.0,
-                max_iter=5000, random_state=42,
-            )
-        else:
-            self.model = XGBClassifier(
-                n_estimators=self.n_estimators,
-                max_depth=self.max_depth,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=1.0,
-                reg_lambda=1.0,
-                random_state=42,
-                eval_metric="logloss",
-            )
-
-        cv_scores = cross_val_score(
-            self.model, X_selected, y,
-            cv=tscv, scoring="roc_auc",
-        )
-        cv_auc_mean = float(np.mean(cv_scores))
-        cv_auc_std = float(np.std(cv_scores))
 
         # ── Step 4: Null model benchmark ──
         # A null model predicts the majority class — if CV AUC <= 0.55,
@@ -233,7 +245,8 @@ class XGBoostSignalClassifier:
                 message="Model AUC not meaningfully above random (0.55 threshold)",
             )
 
-        # ── Step 5: Final fit on all data with selected features ──
+        # ── Step 4: Final fit on all data with selected features ──
+        self.model = self._make_model()
         self.model.fit(X_selected, y)
 
         y_pred = self.model.predict(X_selected)
@@ -378,6 +391,30 @@ class XGBoostSignalClassifier:
     @property
     def is_trained(self) -> bool:
         return self.model is not None
+
+    # ── Model factory ────────────────────────────────────────────────────
+
+    def _make_model(self):
+        """Create a fresh model instance based on the selected model_type."""
+        from xgboost import XGBClassifier
+        from sklearn.linear_model import LogisticRegression
+
+        if self.model_type == "logistic":
+            return LogisticRegression(
+                penalty="l1", solver="saga", C=1.0,
+                max_iter=5000, random_state=42,
+            )
+        return XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=1.0,
+            reg_lambda=1.0,
+            random_state=42,
+            eval_metric="logloss",
+        )
 
     # ── Dataset builder ───────────────────────────────────────────────────
 

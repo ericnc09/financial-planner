@@ -430,15 +430,21 @@ class ScoreCalibrator:
         records: list[dict],
         score_field: str = "ensemble_score",
         return_field: str = "realized_return",
+        eval_pct: float = 0.30,
     ) -> dict:
         """
         Fit isotonic regression: raw_score → P(win).
 
+        Uses a temporal holdout: fits on the first (1-eval_pct) of records
+        and evaluates calibration error on the remaining eval_pct to prevent
+        overfitting the calibration curve.
+
         Args:
             records: Historical records with scores and realized returns.
+            eval_pct: Fraction of records held out for evaluation (default 30%).
 
         Returns:
-            Dict with fit diagnostics.
+            Dict with fit diagnostics including in-sample and OOS MAE.
         """
         try:
             from sklearn.isotonic import IsotonicRegression
@@ -460,10 +466,15 @@ class ScoreCalibrator:
         X = np.array(scores)
         y = np.array(outcomes)
 
+        # Temporal split: fit on first 70%, evaluate on last 30%
+        split_idx = int(len(X) * (1 - eval_pct))
+        X_fit, X_eval = X[:split_idx], X[split_idx:]
+        y_fit, y_eval = y[:split_idx], y[split_idx:]
+
         self.isotonic = IsotonicRegression(
             y_min=0.0, y_max=1.0, out_of_bounds="clip",
         )
-        self.isotonic.fit(X, y)
+        self.isotonic.fit(X_fit, y_fit)
         self.is_fitted = True
 
         # Diagnostics: check calibration at key score levels
@@ -473,22 +484,32 @@ class ScoreCalibrator:
             calibrated = float(self.isotonic.predict([ts])[0])
             score_map[ts] = round(calibrated, 4)
 
-        # Mean absolute calibration error (on training data)
-        predicted_probs = self.isotonic.predict(X)
-        cal_error = float(np.mean(np.abs(predicted_probs - y)))
+        # In-sample MAE (on fit data)
+        train_probs = self.isotonic.predict(X_fit)
+        train_mae = float(np.mean(np.abs(train_probs - y_fit)))
+
+        # Out-of-sample MAE (on held-out evaluation data)
+        eval_probs = self.isotonic.predict(X_eval)
+        oos_mae = float(np.mean(np.abs(eval_probs - y_eval)))
 
         self.fit_stats = {
             "status": "fitted",
             "n_samples": len(scores),
+            "n_fit": len(X_fit),
+            "n_eval": len(X_eval),
             "calibration_map": score_map,
-            "mean_absolute_error": round(cal_error, 4),
+            "train_mae": round(train_mae, 4),
+            "oos_mae": round(oos_mae, 4),
         }
 
         logger.info(
             "calibrator.fitted",
             n=len(scores),
+            n_fit=len(X_fit),
+            n_eval=len(X_eval),
             map=score_map,
-            mae=round(cal_error, 4),
+            train_mae=round(train_mae, 4),
+            oos_mae=round(oos_mae, 4),
         )
         return self.fit_stats
 
@@ -521,8 +542,10 @@ def format_calibrator_report(fit_result: dict) -> str:
     lines = [
         "SCORE CALIBRATION  (Isotonic Regression: raw score → P(win))",
         "=" * 55,
-        f"Training samples: {fit_result['n_samples']}",
-        f"Mean absolute error: {fit_result['mean_absolute_error']:.4f}",
+        f"Fit samples: {fit_result.get('n_fit', fit_result['n_samples'])}  |  "
+        f"Eval samples: {fit_result.get('n_eval', 'N/A')}",
+        f"Train MAE: {fit_result.get('train_mae', fit_result.get('mean_absolute_error', 0)):.4f}  |  "
+        f"OOS MAE: {fit_result.get('oos_mae', 'N/A')}",
         "",
         f"{'Raw Score':>12} {'→ P(win)':>12}",
         "-" * 26,

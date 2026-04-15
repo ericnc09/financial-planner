@@ -1,8 +1,15 @@
+from datetime import datetime
+
 import structlog
 
 from src.models.schemas import Direction, EnrichmentSchema
 
 logger = structlog.get_logger()
+
+# Last updated date — used to warn when medians may be stale.
+# If >6 months old, a warning is logged at scoring time.
+_SECTOR_MEDIANS_UPDATED = "2024-01-15"
+_staleness_warned = False
 
 # Median short interest ratio by sector (days-to-cover)
 # Source: FINRA / Bloomberg estimates
@@ -43,6 +50,25 @@ SECTOR_MEDIAN_PE = {
 DEFAULT_SECTOR_PE = 20.0  # fallback when sector unknown
 
 
+def _check_sector_median_staleness():
+    """Log a warning if sector medians haven't been updated in >6 months."""
+    global _staleness_warned
+    if _staleness_warned:
+        return
+    updated = datetime.strptime(_SECTOR_MEDIANS_UPDATED, "%Y-%m-%d")
+    age_days = (datetime.utcnow() - updated).days
+    if age_days > 180:
+        logger.warning(
+            "fundamental_scorer.stale_sector_medians",
+            last_updated=_SECTOR_MEDIANS_UPDATED,
+            age_days=age_days,
+            hint="Sector median P/E and short ratios may be outdated. "
+                 "Update SECTOR_MEDIAN_PE and SECTOR_MEDIAN_SHORT_RATIO "
+                 "in fundamental_scorer.py with current values.",
+        )
+        _staleness_warned = True
+
+
 class FundamentalScorer:
     """Scores fundamental quality and price setup (0-1). Direction-aware."""
 
@@ -56,6 +82,7 @@ class FundamentalScorer:
     }
 
     def score(self, enrichment: EnrichmentSchema, direction: Direction) -> float:
+        _check_sector_median_staleness()
         scores = {
             "valuation": self._valuation_score(enrichment.pe_ratio, direction, enrichment.sector),
             "momentum": self._momentum_score(
