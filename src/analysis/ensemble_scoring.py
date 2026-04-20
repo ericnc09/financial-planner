@@ -8,12 +8,43 @@ Supports walk-forward weight calibration: optimize weights on rolling
 6-month windows, test on next month, to produce data-driven weights.
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 import structlog
 from scipy.optimize import minimize
 from scipy.stats import false_discovery_control
 
 logger = structlog.get_logger()
+
+
+_SECTOR_WEIGHTS_PATH = Path(__file__).resolve().parents[2] / "config" / "sector_weights.json"
+_SECTOR_WEIGHTS_CACHE: dict | None = None
+
+
+def load_sector_weights() -> dict:
+    """Load sector multipliers from config. Cached after first read."""
+    global _SECTOR_WEIGHTS_CACHE
+    if _SECTOR_WEIGHTS_CACHE is not None:
+        return _SECTOR_WEIGHTS_CACHE
+    try:
+        with open(_SECTOR_WEIGHTS_PATH) as f:
+            data = json.load(f)
+        # Strip commentary keys
+        _SECTOR_WEIGHTS_CACHE = {k: v for k, v in data.items() if not k.startswith("_") or k == "_default"}
+    except Exception as e:
+        logger.warning("sector_weights.load_failed", error=str(e))
+        _SECTOR_WEIGHTS_CACHE = {"_default": 1.0}
+    return _SECTOR_WEIGHTS_CACHE
+
+
+def get_sector_multiplier(sector: str | None) -> float:
+    """Look up a sector's ensemble multiplier. 1.0 (no effect) on miss."""
+    if not sector:
+        return 1.0
+    weights = load_sector_weights()
+    return float(weights.get(sector, weights.get("_default", 1.0)))
 
 
 # ── Multiple Testing Correction ──────────────────────────────────────────────
@@ -84,6 +115,7 @@ class EnsembleScorer:
         event_study: dict | None = None,
         options_flow: dict | None = None,
         earnings_overlay: dict | None = None,
+        sector: str | None = None,
     ) -> dict:
         """
         Compute ensemble score 0-100 from all available model outputs.
@@ -91,6 +123,8 @@ class EnsembleScorer:
         Args:
             direction: 'buy' or 'sell'.
             Each model param: dict output from the respective analyzer, or None if unavailable.
+            sector: Ticker's sector. If provided, a post-score multiplier is applied
+                    from config/sector_weights.json (e.g. Technology 1.2x, Energy 0.8x).
 
         Returns:
             Dict with total score, component scores, confidence, and recommendation.
@@ -160,6 +194,16 @@ class EnsembleScorer:
         for name, score in components.items():
             total += score * (self.WEIGHTS[name] / available_weight)
 
+        # Sector multiplier: applied *after* the weighted component average but
+        # before recommendation thresholding. Statistical integrity of the
+        # individual model scores (and their p-values) is preserved — this is a
+        # prior on which sectors deserve higher conviction, not a re-weighting
+        # of the underlying evidence. Clamp to [0, 100] after application.
+        sector_mult = get_sector_multiplier(sector)
+        raw_total = total
+        if sector_mult != 1.0:
+            total = min(100.0, max(0.0, total * sector_mult))
+
         n_models = len(components)
         confidence = round(available_weight / sum(self.WEIGHTS.values()), 4)
 
@@ -189,6 +233,9 @@ class EnsembleScorer:
         result = {
             "direction": direction,
             "total_score": round(total, 1),
+            "raw_total_score": round(raw_total, 1),
+            "sector": sector,
+            "sector_multiplier": round(sector_mult, 3),
             "components": {k: round(v, 1) for k, v in components.items()},
             "n_models": n_models,
             "agreeing_models": agreeing_models,

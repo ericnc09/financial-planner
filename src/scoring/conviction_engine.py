@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import structlog
 
 from config.settings import Settings
@@ -13,6 +16,18 @@ from src.scoring.macro_scorer import MacroScorer
 from src.scoring.signal_scorer import SignalScorer
 
 logger = structlog.get_logger()
+
+_RISK_PROFILES_PATH = Path(__file__).resolve().parents[2] / "config" / "risk_profiles.json"
+
+
+def _load_risk_profile(name: str) -> dict | None:
+    """Load a risk profile from config/risk_profiles.json. None on miss."""
+    try:
+        with open(_RISK_PROFILES_PATH) as f:
+            profiles = json.load(f)
+        return profiles.get(name)
+    except Exception:
+        return None
 
 
 class ConvictionEngine:
@@ -48,6 +63,7 @@ class ConvictionEngine:
         enrichment: EnrichmentSchema,
         macro_snapshot: MacroSnapshotSchema,
         recent_events: list[SmartMoneyEventSchema],
+        risk_profile: str | None = None,
     ) -> ConvictionResult:
         # Score each layer
         signal_score = self.signal_scorer.score(event, recent_events)
@@ -74,7 +90,7 @@ class ConvictionEngine:
 
         # Adaptive threshold: adjust based on regime and volatility
         threshold = self._adaptive_threshold(
-            regime, enrichment, event.direction
+            regime, enrichment, event.direction, risk_profile
         )
         passes = conviction >= threshold
 
@@ -105,6 +121,7 @@ class ConvictionEngine:
         regime: str,
         enrichment: EnrichmentSchema,
         direction: Direction,
+        risk_profile: str | None = None,
     ) -> float:
         """
         Compute regime- and volatility-adjusted conviction threshold.
@@ -112,8 +129,15 @@ class ConvictionEngine:
         In bear/high-vol regimes, raise the bar for buy signals (require
         stronger conviction). In calm expansions, relax slightly.
         For sell signals in bear markets, we relax (easier to confirm).
+
+        When risk_profile is provided (conservative / moderate / aggressive),
+        its min_conviction overrides settings.conviction_threshold as the base.
         """
         base = self.settings.conviction_threshold
+        if risk_profile:
+            profile = _load_risk_profile(risk_profile)
+            if profile and "min_conviction" in profile:
+                base = float(profile["min_conviction"])
 
         # Regime adjustment
         regime_adj = self.REGIME_THRESHOLD_ADJUSTMENTS.get(

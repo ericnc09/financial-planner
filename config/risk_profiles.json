@@ -1,0 +1,20 @@
+{
+  "conservative": {
+    "max_position_size": 0.02,
+    "min_conviction": 0.80,
+    "stop_loss_threshold": 0.05,
+    "description": "Quality-focused; caps single position at 2%, requires very high conviction, tight stop-loss."
+  },
+  "moderate": {
+    "max_position_size": 0.04,
+    "min_conviction": 0.70,
+    "stop_loss_threshold": 0.08,
+    "description": "Balanced; caps single position at 4%, standard conviction bar, moderate stop-loss."
+  },
+  "aggressive": {
+    "max_position_size": 0.07,
+    "min_conviction": 0.60,
+    "stop_loss_threshold": 0.12,
+    "description": "Growth-seeking; caps single position at 7%, lower conviction bar, wider stop-loss."
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "Technology": 1.20,
+  "Communication Services": 1.10,
+  "Consumer Cyclical": 1.00,
+  "Financial Services": 0.90,
+  "Healthcare": 1.00,
+  "Industrials": 1.00,
+  "Consumer Defensive": 0.95,
+  "Energy": 0.80,
+  "Utilities": 0.85,
+  "Basic Materials": 0.90,
+  "Real Estate": 0.90,
+  "_default": 1.00,
+  "_notes": "Applied post-FDR to ensemble scores. >1.0 boosts sector (higher conviction in secular growth); <1.0 dampens (commodity/cyclical exposure)."
+}

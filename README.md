@@ -177,6 +177,9 @@ All data sources are **free and require no paid subscriptions** (FRED key is fre
 | `/api/performance/update` | POST | Trigger performance update for all signals |
 | `/api/export/signals` | GET | Export signals as CSV or JSON (`format` param) |
 | `/api/export/analysis/{ticker}` | GET | Export ticker analysis as CSV or JSON |
+| `/api/export/report/{ticker}` | GET | 8-section markdown equity research report (`format=md\|json`, `risk_profile=conservative\|moderate\|aggressive`) |
+| `/api/catalysts/{ticker}` | GET | Near- and medium-term catalyst calendar (earnings, 8-K, macro) |
+| `/api/peers/{ticker}` | GET | Peer comparison vs sector median (P/E, P/S, EV/EBITDA, margins) |
 | `/api/pipeline/run` | POST | Trigger full pipeline cycle |
 | `/api/dashboard` | GET | Combined signals + macro for dashboard |
 | `/docs` | GET | Interactive Swagger API documentation |
@@ -355,11 +358,65 @@ This system implements institutional-grade statistical safeguards to eliminate f
 - [x] Isotonic regression calibration (D5) — live score → P(win) mapping
 - [x] XGBoost overhaul: nested CV, permutation feature selection, sample-size guards
 - [x] Stock price history visualization — per-ticker SVG chart with time range selector and performance stats
+- [x] Institutional equity research report generator (8-section markdown, `/equity-report` slash command, risk profiles, bull/base/bear scenarios, peer comparison, catalyst calendar, sector weight multipliers, compliance filter)
 - [ ] Scheduled pipeline + historical backfill (cron + 6-12 month SEC EDGAR archives)
 - [ ] Network/graph analysis of insider co-trading patterns
 - [ ] NLP sentiment on 10-K/10-Q filings (Loughran-McDonald wordlists)
 - [ ] Paper trading mode with P&L tracking
 - [ ] Real-time streaming (WebSocket + SSE)
+- [ ] ESG / governance scoring (requires paid data source)
+- [ ] PDF export for equity research reports (reportlab / weasyprint)
+
+---
+
+## Equity Research Reports
+
+In addition to the Slack alerts and React dashboard, the pipeline can emit a full **8-section institutional-style equity research report** in markdown for any ticker in the analysis universe. The report wraps the same quant pipeline (Monte Carlo, HMM, GARCH, Fama-French, copula, Bayesian decay, ensemble scoring) in a narrative layout covering executive summary, fundamentals, catalysts, valuation, risk, technical context, market positioning, and insider signals.
+
+### Generating a report
+
+**Via the API:**
+```bash
+curl -s "http://localhost:8000/api/export/report/AAPL?format=md&risk_profile=moderate" > AAPL.md
+```
+Params: `format=md|json`, `risk_profile=conservative|moderate|aggressive`, `portfolio_value` (default 100000), `include_peers`, `include_catalysts`.
+
+**Via the Claude Code slash command:**
+```
+/equity-report AAPL --profile moderate
+```
+The slash command prefers the local API but falls back to running the pipeline in-process if the server is not running.
+
+**Programmatically:**
+```python
+from src.reporting.markdown_report import generate_report
+from src.api.api import _run_full_analysis
+
+analysis = await _run_full_analysis("AAPL")
+report_md = await generate_report("AAPL", analysis, risk_profile="moderate")
+```
+
+### Risk profiles
+
+`config/risk_profiles.json` defines three profiles used throughout the pipeline:
+
+| Profile | Max position | Min conviction | Stop-loss |
+|---|---:|---:|---:|
+| conservative | 2% | 80% | 5% |
+| moderate | 4% | 70% | 8% |
+| aggressive | 7% | 60% | 12% |
+
+The profile affects (a) position sizing caps in `src/analysis/position_sizing.py`, (b) the base conviction threshold in `src/scoring/conviction_engine.py`, and (c) the stop-loss level embedded in the report's risk section.
+
+### Sample reports
+
+See [`examples/sample_reports/`](examples/sample_reports/) for end-to-end samples:
+- `AAPL_analysis.md` — BUY verdict, Technology sector
+- `XOM_analysis.md` — HOLD verdict, Energy sector (conservative profile)
+
+### Compliance filter
+
+Every generated report passes through `src/reporting/compliance.py`, which scans for absolute-language terms (`guaranteed`, `risk-free`, `sure thing`, etc.) and replaces them with neutral alternatives, then appends the mandatory educational-use disclaimer. Violations are logged via structlog.
 
 ---
 

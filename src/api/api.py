@@ -1057,6 +1057,132 @@ def export_analysis(ticker: str, format: str = Query(default="csv")):
                    headers={"Content-Disposition": f"attachment; filename={ticker}_analysis.csv"})
 
 
+@app.get("/api/export/report/{ticker}")
+async def export_report(
+    ticker: str,
+    format: str = Query(default="md"),
+    risk_profile: str = Query(default="moderate"),
+    portfolio_value: float = Query(default=100_000.0, ge=1000.0),
+    include_peers: bool = Query(default=True),
+    include_catalysts: bool = Query(default=True),
+):
+    """Generate the 8-section institutional equity research report for a ticker."""
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+
+    if risk_profile not in ("conservative", "moderate", "aggressive"):
+        raise HTTPException(
+            status_code=400,
+            detail="risk_profile must be one of: conservative, moderate, aggressive",
+        )
+    if format not in ("md", "json"):
+        raise HTTPException(status_code=400, detail="format must be 'md' or 'json'")
+
+    ticker_up = ticker.upper()
+    analysis = await _run_full_analysis(ticker_up)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"No analysis available for {ticker_up}")
+
+    from src.reporting.markdown_report import generate_report
+
+    report_md = await generate_report(
+        ticker_up,
+        analysis,
+        risk_profile=risk_profile,
+        portfolio_value=portfolio_value,
+        include_peers=include_peers,
+        include_catalysts=include_catalysts,
+    )
+
+    if format == "json":
+        import json as _json
+        payload = {
+            "ticker": ticker_up,
+            "risk_profile": risk_profile,
+            "report_markdown": report_md,
+            "verdict": analysis.get("verdict"),
+            "buy_score": analysis.get("buy_score"),
+            "sell_score": analysis.get("sell_score"),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        return Response(
+            content=_json.dumps(payload, indent=2, default=str),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={ticker_up}_report.json"},
+        )
+
+    return Response(
+        content=report_md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename={ticker_up}_report.md"},
+    )
+
+
+@app.get("/api/catalysts/{ticker}")
+async def get_ticker_catalysts(
+    ticker: str,
+    horizon: int = Query(default=90, ge=14, le=365),
+):
+    """Return near- and medium-term catalysts (earnings, 8-K, macro) for a ticker."""
+    from src.analysis.catalyst_calendar import get_catalysts
+
+    result = await get_catalysts(ticker.upper(), horizon_days=horizon)
+    return result
+
+
+@app.get("/api/peers/{ticker}")
+async def get_ticker_peers(
+    ticker: str,
+    n: int = Query(default=5, ge=1, le=12),
+):
+    """Return peer comparison (relative valuation vs sector median) for a ticker."""
+    from fastapi import HTTPException
+
+    from src.analysis.peer_compare import compare_to_peers
+
+    result = await compare_to_peers(ticker.upper(), n_peers=n)
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No peer comparison available for {ticker.upper()} (sector unknown or no peers)",
+        )
+    return result
+
+
+async def _run_full_analysis(ticker: str) -> dict | None:
+    """Run analyze_ticker end-to-end. Shared by report + on-demand endpoints."""
+    from src.analysis.copula_tail_risk import CopulaTailRisk
+    from src.analysis.ensemble_scoring import EnsembleScorer
+    from src.analysis.garch_forecast import GARCHForecaster
+    from src.analysis.hmm_regime import HMMRegimeDetector
+    from src.analysis.monte_carlo import MonteCarloSimulator
+    from src.analysis.ticker_analysis import analyze_ticker
+    from src.clients.fama_french import FamaFrenchClient
+    from src.clients.yahoo import YahooClient
+
+    yahoo = YahooClient()
+    ff_client = FamaFrenchClient()
+    try:
+        ff_factors = await ff_client.get_factors(days=504)
+    except Exception as e:
+        logger.warning("api.report.ff_factors_failed", error=str(e))
+        ff_factors = None
+
+    mc = MonteCarloSimulator()
+    hmm = HMMRegimeDetector()
+    garch = GARCHForecaster()
+    copula = CopulaTailRisk()
+    ensemble = EnsembleScorer()
+
+    try:
+        return await analyze_ticker(
+            ticker, yahoo, ff_client, ff_factors, mc, hmm, garch, copula, ensemble
+        )
+    except Exception as e:
+        logger.warning("api.report.analysis_failed", ticker=ticker, error=str(e))
+        return None
+
+
 class PriceHistoryResponse(BaseModel):
     ticker: str
     dates: list[str]
