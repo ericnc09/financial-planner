@@ -24,9 +24,11 @@ class EventStudyAnalyzer:
         self,
         estimation_window: tuple[int, int] = (-120, -10),
         event_window: tuple[int, int] = (-5, 20),
+        random_seed: int = 42,
     ):
         self.est_start, self.est_end = estimation_window
         self.evt_start, self.evt_end = event_window
+        self.random_seed = random_seed
 
     def analyze_event(
         self,
@@ -51,6 +53,19 @@ class EventStudyAnalyzer:
         Returns:
             Dict with daily abnormal returns, CAR at key horizons, or None if insufficient data.
         """
+        # Fail fast on misaligned inputs: stock and market return arrays must
+        # share an index, otherwise the market model is fit on mismatched days.
+        if len(price_returns) != len(market_returns):
+            raise ValueError(
+                f"event_study length mismatch: price_returns={len(price_returns)} "
+                f"vs market_returns={len(market_returns)} for {ticker}"
+            )
+        if len(price_returns) != max(len(price_dates) - 1, 0):
+            raise ValueError(
+                f"event_study dates/returns mismatch: dates={len(price_dates)} "
+                f"expects returns={len(price_dates) - 1}, got {len(price_returns)}"
+            )
+
         # Find event date index in the dates array
         event_idx = self._find_event_index(price_dates, event_date)
         if event_idx is None:
@@ -92,10 +107,12 @@ class EventStudyAnalyzer:
         beta, residuals, rank, sv = np.linalg.lstsq(X, est_stock, rcond=None)
         alpha, mkt_beta = float(beta[0]), float(beta[1])
 
-        # Estimation window residual std for significance testing
+        # Estimation window residual std for significance testing.
+        # Use ddof=1 (sample std) for the per-day AR standard error; the
+        # two regression dof are absorbed into the t-statistic's df below.
         est_predicted = alpha + mkt_beta * est_market
         est_residuals = est_stock - est_predicted
-        sigma_est = float(np.std(est_residuals, ddof=2))
+        sigma_est = float(np.std(est_residuals, ddof=1))
 
         if sigma_est == 0:
             return None
@@ -280,7 +297,7 @@ class EventStudyAnalyzer:
         """
         observed_car = float(np.sum(abnormal_returns))
         n_event = len(abnormal_returns)
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(self.random_seed)
 
         null_cars = np.empty(n_boot)
         for b in range(n_boot):

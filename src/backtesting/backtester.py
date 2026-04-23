@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+import numpy as np
 import structlog
 
 from config.settings import Settings
@@ -238,14 +239,18 @@ class Backtester:
         # Sharpe ratio (annualized, assuming 0 risk-free for simplicity)
         sharpe = (avg_ret / std * ann_factor) if std > 0 else 0
 
-        # Sortino ratio (downside deviation)
+        # Sortino ratio (downside deviation). No downside → Sortino is
+        # undefined; surface that as inf (positive avg), -inf (negative avg),
+        # or nan (no activity) rather than silently flattening to a magic 99.
         downside = [r for r in returns if r < 0]
         if downside:
             downside_var = sum(r**2 for r in downside) / len(downside)
             downside_std = math.sqrt(downside_var)
-            sortino = (avg_ret / downside_std * ann_factor) if downside_std > 0 else 0
+            sortino = (avg_ret / downside_std * ann_factor) if downside_std > 0 else (
+                float("inf") if avg_ret > 0 else float("-inf") if avg_ret < 0 else 0.0
+            )
         else:
-            sortino = float("inf") if avg_ret > 0 else 0
+            sortino = float("inf") if avg_ret > 0 else float("-inf") if avg_ret < 0 else 0.0
 
         # Profit factor
         gross_profits = sum(wins) if wins else 0
@@ -266,14 +271,21 @@ class Backtester:
             if dd > max_dd:
                 max_dd = dd
 
+        # Preserve inf/-inf for "no downside" cases; round only finite values
+        # so downstream consumers can branch on np.isinf explicitly.
+        sortino_out = sortino if np.isinf(sortino) else round(sortino, 4)
+        profit_factor_out = (
+            profit_factor if np.isinf(profit_factor) else round(profit_factor, 4)
+        )
+
         return PeriodMetrics(
             hold_days=hold_days,
             total_trades=n,
             win_rate=round(win_rate, 4),
             avg_return=round(avg_ret, 6),
             sharpe_ratio=round(sharpe, 4),
-            sortino_ratio=round(min(sortino, 99.0), 4),
-            profit_factor=round(min(profit_factor, 99.0), 4),
+            sortino_ratio=sortino_out,
+            profit_factor=profit_factor_out,
             max_drawdown=round(max_dd, 6),
         )
 

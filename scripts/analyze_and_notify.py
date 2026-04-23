@@ -45,7 +45,7 @@ async def run_and_notify(tickers: list[str]):
     # Init models
     yahoo = YahooClient()
     ff_client = FamaFrenchClient()
-    mc = MonteCarloSimulator(n_simulations=10_000, seed=42)
+    mc = MonteCarloSimulator(n_simulations=10_000, seed=settings.random_seed)
     hmm = HMMRegimeDetector()
     garch = GARCHForecaster()
     copula = CopulaTailRisk()

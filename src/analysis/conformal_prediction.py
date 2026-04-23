@@ -18,6 +18,11 @@ Uses split-conformal approach (Vovk et al., 2005):
 import numpy as np
 import structlog
 
+# Isotonic regression is the same monotonic, distribution-free estimator used
+# by validator.ScoreCalibrator for raw_score → P(win). Here we apply the same
+# approach to raw_score → E[return] (no [0, 1] clipping).
+from sklearn.isotonic import IsotonicRegression
+
 logger = structlog.get_logger()
 
 
@@ -81,15 +86,17 @@ class ConformalPredictor:
         if len(train_scores) < 10:
             return {"status": "insufficient_training_data", "n_train": len(train_scores)}
 
-        # Simple linear model: E[return] = a * score + b
-        coeffs = np.polyfit(train_scores, train_returns, deg=1)
-        self.model = coeffs  # [slope, intercept]
+        # Monotonic, distribution-free score → return map via isotonic
+        # regression. Handles out-of-range scores by clipping to the fitted
+        # range (same mechanism used by validator.ScoreCalibrator).
+        self.model = IsotonicRegression(out_of_bounds="clip")
+        self.model.fit(train_scores, train_returns)
 
         # Compute nonconformity scores on calibration set
         cal_scores = np.array([r[score_field] for r in cal_recs if r.get(return_field) is not None])
         cal_returns = np.array([r[return_field] for r in cal_recs if r.get(return_field) is not None])
 
-        predicted_cal = np.polyval(self.model, cal_scores)
+        predicted_cal = self.model.predict(cal_scores)
         self.calibration_scores = np.abs(cal_returns - predicted_cal)
 
         # Quantile for coverage: ceil((n_cal + 1) * coverage) / n_cal
@@ -115,6 +122,15 @@ class ConformalPredictor:
             target_coverage=self.coverage,
         )
 
+        # Sample the fitted isotonic curve at canonical score levels so the
+        # report can show the shape of the score→return map without exposing
+        # sklearn internals.
+        sample_points = [20, 40, 55, 65, 75, 85, 95]
+        calibration_map = {
+            s: round(float(self.model.predict([s])[0]), 6)
+            for s in sample_points
+        }
+
         return {
             "status": "fitted",
             "n_train": len(train_scores),
@@ -122,8 +138,8 @@ class ConformalPredictor:
             "quantile_threshold": round(self.quantile_threshold, 4),
             "empirical_coverage": round(float(empirical_coverage), 4),
             "target_coverage": self.coverage,
-            "model_slope": round(float(coeffs[0]), 6),
-            "model_intercept": round(float(coeffs[1]), 6),
+            "model": "isotonic_regression",
+            "calibration_map": calibration_map,
         }
 
     def predict_interval(self, ensemble_score: float) -> dict | None:
@@ -140,7 +156,7 @@ class ConformalPredictor:
         if not self.is_fitted:
             return None
 
-        predicted = float(np.polyval(self.model, ensemble_score))
+        predicted = float(self.model.predict([ensemble_score])[0])
         lower = predicted - self.quantile_threshold
         upper = predicted + self.quantile_threshold
         width = upper - lower
@@ -198,13 +214,19 @@ def format_conformal_report(fit_result: dict) -> str:
     if fit_result.get("status") != "fitted":
         return f"Conformal Prediction: {fit_result.get('status', 'unknown')}"
 
-    return (
-        f"CONFORMAL PREDICTION  ({fit_result['target_coverage']:.0%} coverage)\n"
-        f"{'=' * 50}\n"
-        f"Training samples: {fit_result['n_train']}\n"
-        f"Calibration samples: {fit_result['n_calibration']}\n"
-        f"Quantile threshold: ±{fit_result['quantile_threshold']:.4f}\n"
+    lines = [
+        f"CONFORMAL PREDICTION  ({fit_result['target_coverage']:.0%} coverage)",
+        "=" * 50,
+        f"Training samples: {fit_result['n_train']}",
+        f"Calibration samples: {fit_result['n_calibration']}",
+        f"Quantile threshold: ±{fit_result['quantile_threshold']:.4f}",
         f"Empirical coverage: {fit_result['empirical_coverage']:.1%} "
-        f"(target: {fit_result['target_coverage']:.1%})\n"
-        f"Model: return = {fit_result['model_slope']:.6f} × score + {fit_result['model_intercept']:.6f}"
-    )
+        f"(target: {fit_result['target_coverage']:.1%})",
+        f"Model: {fit_result.get('model', 'isotonic_regression')} (raw score → E[return])",
+    ]
+    cal_map = fit_result.get("calibration_map") or {}
+    if cal_map:
+        lines.append(f"{'Score':>8} {'→ E[return]':>14}")
+        for score, ret in cal_map.items():
+            lines.append(f"{score:>8} {ret:>14.4%}")
+    return "\n".join(lines)

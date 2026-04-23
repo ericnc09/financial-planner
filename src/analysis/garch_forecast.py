@@ -81,9 +81,11 @@ class GARCHForecaster:
             else:
                 long_run_var = cond_var  # fallback
 
-            # Historical realized volatility for comparison
-            hist_vol_20d = float(np.std(returns[-20:]) * np.sqrt(252))
-            hist_vol_60d = float(np.std(returns[-60:]) * np.sqrt(252))
+            # Historical realized volatility for comparison.
+            # Strict offset: exclude the current (as-of-date) return so the
+            # window is purely pre-event and cannot leak same-day info.
+            hist_vol_20d = float(np.std(returns[-(20 + 1):-1], ddof=1) * np.sqrt(252))
+            hist_vol_60d = float(np.std(returns[-(60 + 1):-1], ddof=1) * np.sqrt(252))
 
             # Multi-step forecast
             forecasts = {}
@@ -151,13 +153,17 @@ class GARCHForecaster:
         if horizons is None:
             horizons = [5, 20]
         lam = 0.94
-        var_t = float(np.var(returns[-20:]))
+        # Seed EWMA variance from pre-as-of window (strict offset).
+        var_t = float(np.var(returns[-(20 + 1):-1], ddof=1))
         # Recursive EWMA variance
         for r in returns:
             var_t = lam * var_t + (1 - lam) * r ** 2
 
-        hist_vol_20d = float(np.std(returns[-20:]) * np.sqrt(252))
-        hist_vol_60d = float(np.std(returns[-min(60, len(returns)):]) * np.sqrt(252))
+        hist_vol_20d = float(np.std(returns[-(20 + 1):-1], ddof=1) * np.sqrt(252))
+        hist_60_lookback = min(60, len(returns) - 1)
+        hist_vol_60d = float(
+            np.std(returns[-(hist_60_lookback + 1):-1], ddof=1) * np.sqrt(252)
+        )
         current_vol_annual = float(np.sqrt(var_t) * np.sqrt(252))
 
         forecasts = {}

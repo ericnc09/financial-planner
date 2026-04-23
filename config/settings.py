@@ -29,4 +29,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Global RNG seed — plumbed into RNG call sites for reproducibility.
+    random_seed: int = 42
+
     model_config = {"env_file": "config/.env", "env_file_encoding": "utf-8"}

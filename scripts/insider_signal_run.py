@@ -126,7 +126,7 @@ async def run():
     print("Running analysis models...")
     yahoo = YahooClient()
     ff_client = FamaFrenchClient()
-    mc = MonteCarloSimulator(n_simulations=10_000, seed=42)
+    mc = MonteCarloSimulator(n_simulations=10_000, seed=settings.random_seed)
     hmm = HMMRegimeDetector()
     garch = GARCHForecaster()
     copula = CopulaTailRisk()

@@ -15,6 +15,7 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config.settings import Settings
 from src.clients.yahoo import YahooClient
 from src.clients.fama_french import FamaFrenchClient
 from src.analysis.monte_carlo import MonteCarloSimulator
@@ -62,9 +63,10 @@ async def main():
     print("=" * 80)
     print()
 
+    settings = Settings()
     yahoo = YahooClient()
     ff_client = FamaFrenchClient()
-    mc = MonteCarloSimulator(n_simulations=10_000, seed=42)
+    mc = MonteCarloSimulator(n_simulations=10_000, seed=settings.random_seed)
     hmm = HMMRegimeDetector()
     garch_model = GARCHForecaster()
     copula = CopulaTailRisk()

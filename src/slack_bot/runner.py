@@ -6,6 +6,7 @@ import asyncio
 
 import structlog
 
+from config.settings import Settings
 from src.clients.yahoo import YahooClient
 from src.clients.fama_french import FamaFrenchClient
 from src.analysis.monte_carlo import MonteCarloSimulator
@@ -25,9 +26,10 @@ async def run_analysis(tickers: list[str]) -> tuple[list[dict], list[str]]:
     Returns:
         (results, failed) — list of successful result dicts and list of failed ticker strings.
     """
+    settings = Settings()
     yahoo = YahooClient()
     ff_client = FamaFrenchClient()
-    mc = MonteCarloSimulator(n_simulations=10_000, seed=42)
+    mc = MonteCarloSimulator(n_simulations=10_000, seed=settings.random_seed)
     hmm = HMMRegimeDetector()
     garch = GARCHForecaster()
     copula = CopulaTailRisk()
