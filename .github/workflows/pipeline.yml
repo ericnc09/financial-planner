@@ -60,6 +60,22 @@ jobs:
           LOG_LEVEL: INFO
         run: python -m src.pipeline.orchestrator --mode oneshot
 
+      # Run unit tests after the pipeline so a green workflow guarantees
+      # both that the day's run succeeded AND the test suite still passes.
+      - name: Run unit tests
+        run: python -m pytest tests/ -q --no-header
+
+      # Performance gate: fail the build if Sharpe < SHARPE_FLOOR or IC < IC_FLOOR.
+      # Reads from the live DB if it has return_20d-labeled records; otherwise
+      # falls back to tests/fixtures/synthetic_signals.json so the gate
+      # operates from day one. Tune floors via repo variables.
+      - name: Performance gate (Sharpe / IC)
+        env:
+          DATABASE_URL: sqlite:///./smart_money.db
+          SHARPE_FLOOR: ${{ vars.SHARPE_FLOOR || '0.5' }}
+          IC_FLOOR: ${{ vars.IC_FLOOR || '0.03' }}
+        run: python scripts/validate_performance.py
+
       # Persist the DB after each run so the next run picks up where this left off.
       - name: Save database cache
         if: always()

@@ -75,10 +75,12 @@ class XGBoostSignalClassifier:
     """
 
     def __init__(self, n_estimators: int = 200, max_depth: int = 4,
-                 model_path: str = DEFAULT_MODEL_PATH):
+                 model_path: str = DEFAULT_MODEL_PATH,
+                 random_seed: int = 42):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.model_path = model_path
+        self.random_seed = random_seed
         self.model = None
         self.model_type = None  # "xgboost" or "logistic"
         self.selected_features = None  # features that survived selection
@@ -130,7 +132,7 @@ class XGBoostSignalClassifier:
                 solver="saga",
                 C=1.0,
                 max_iter=5000,
-                random_state=42,
+                random_state=self.random_seed,
             )
             logger.info(
                 "xgboost.using_logistic_fallback",
@@ -147,7 +149,7 @@ class XGBoostSignalClassifier:
                 colsample_bytree=0.8,
                 reg_alpha=1.0,    # L1 regularization
                 reg_lambda=1.0,   # L2 regularization
-                random_state=42,
+                random_state=self.random_seed,
                 eval_metric="logloss",
             )
 
@@ -165,35 +167,61 @@ class XGBoostSignalClassifier:
             X_train_fold, X_test_fold = X[train_idx], X[test_idx]
             y_train_fold, y_test_fold = y[train_idx], y[test_idx]
 
-            # Feature selection on training fold only
-            rng = np.random.default_rng(42 + fold_idx)
-            noise_col = rng.standard_normal(len(X_train_fold))
-            X_train_noise = np.column_stack([X_train_fold, noise_col])
+            # Append a synthetic noise column to BOTH the training and held-out
+            # test fold using a single RNG draw — same noise distribution, different
+            # samples — so the noise feature is comparable to real features under
+            # permutation. Fold-specific seed keeps each fold reproducible.
+            rng = np.random.default_rng(self.random_seed + fold_idx)
+            noise_train = rng.standard_normal(len(X_train_fold))
+            noise_test = rng.standard_normal(len(X_test_fold))
+            X_train_noise = np.column_stack([X_train_fold, noise_train])
+            X_test_noise = np.column_stack([X_test_fold, noise_test])
 
+            # Fit on the training fold...
             fold_model = self._make_model()
             fold_model.fit(X_train_noise, y_train_fold)
-            perm_result = permutation_importance(
-                fold_model, X_train_noise, y_train_fold,
-                n_repeats=10, random_state=42, scoring="roc_auc",
-            )
-            noise_importance = perm_result.importances_mean[-1]
 
-            # Keep features more important than the noise column
+            # ...but evaluate permutation importance on the HELD-OUT TEST FOLD.
+            # Computing importance on the fit fold is in-sample and inflates
+            # the live vs. backtest performance gap (review finding #2).
+            # Skip if the test fold has only one class (AUC scorer would fail).
+            if len(np.unique(y_test_fold)) > 1:
+                perm_result = permutation_importance(
+                    fold_model, X_test_noise, y_test_fold,
+                    n_repeats=10, random_state=self.random_seed, scoring="roc_auc",
+                )
+                noise_importance = float(perm_result.importances_mean[-1])
+                fold_importances = perm_result.importances_mean[:-1]
+            else:
+                # Single-class fold: fall back to the model's native importance.
+                # Still better than fitting/scoring on the same data.
+                if hasattr(fold_model, "feature_importances_"):
+                    fold_importances = fold_model.feature_importances_[:-1]
+                else:
+                    fold_importances = np.abs(fold_model.coef_[0][:-1])
+                noise_importance = float(
+                    fold_model.feature_importances_[-1]
+                    if hasattr(fold_model, "feature_importances_")
+                    else np.abs(fold_model.coef_[0][-1])
+                )
+
+            # Keep features more important on the held-out fold than the
+            # noise column (which by construction has zero true signal).
             fold_selected = []
             fold_indices = []
             for i, feat in enumerate(FEATURE_COLS):
-                if perm_result.importances_mean[i] > noise_importance:
+                if fold_importances[i] > noise_importance:
                     fold_selected.append(feat)
                     fold_indices.append(i)
 
             if len(fold_selected) < 3:
-                ranked = np.argsort(perm_result.importances_mean[:-1])[::-1]
+                ranked = np.argsort(fold_importances)[::-1]
                 fold_indices = ranked[:8].tolist()
                 fold_selected = [FEATURE_COLS[i] for i in fold_indices]
 
             per_fold_features.append(set(fold_selected))
 
-            # Evaluate on test fold with selected features
+            # Evaluate fold AUC on test fold using only the selected features.
             fold_model2 = self._make_model()
             fold_model2.fit(X_train_fold[:, fold_indices], y_train_fold)
             y_prob = fold_model2.predict_proba(X_test_fold[:, fold_indices])[:, 1]
@@ -345,8 +373,16 @@ class XGBoostSignalClassifier:
 
     # ── Persistence ───────────────────────────────────────────────────────
 
-    def save(self, path: str | None = None) -> bool:
-        """Pickle the trained model to disk."""
+    def save(self, path: str | None = None, session=None) -> bool:
+        """
+        Pickle the trained model to disk.
+
+        Args:
+            path: Override the default model path.
+            session: Optional SQLAlchemy session. When provided, also
+                     records a ModelArtifact row (git commit, file hash,
+                     CV AUC, feature schema) for later rollback / audit.
+        """
         if self.model is None:
             logger.warning("xgboost.save_skipped", reason="no model trained")
             return False
@@ -362,6 +398,38 @@ class XGBoostSignalClassifier:
                     "feature_cols": FEATURE_COLS,
                 }, f)
             logger.info("xgboost.saved", path=target)
+
+            # Persist provenance row when a DB session is provided.
+            if session is not None:
+                try:
+                    from src.models.registry import record_artifact
+
+                    cv_auc = (
+                        self.train_metrics.get("cv_auc_mean")
+                        if self.train_metrics else None
+                    )
+                    record_artifact(
+                        session,
+                        name="xgboost_signal_classifier",
+                        path=target,
+                        cv_auc=cv_auc,
+                        cv_metric_name="cv_auc_mean",
+                        cv_metric_value=cv_auc,
+                        feature_cols=self.selected_features or FEATURE_COLS,
+                        extra={
+                            "model_type": self.model_type,
+                            "n_samples": (self.train_metrics or {}).get("n_samples"),
+                            "n_features_selected": len(self.selected_features or []),
+                            "is_better_than_null": (self.train_metrics or {}).get(
+                                "is_better_than_null"
+                            ),
+                            "is_overfitting": (self.train_metrics or {}).get(
+                                "is_overfitting"
+                            ),
+                        },
+                    )
+                except Exception as e:
+                    logger.warning("xgboost.registry_save_failed", error=str(e))
             return True
         except Exception as e:
             logger.warning("xgboost.save_failed", error=str(e))
