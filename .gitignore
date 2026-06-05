@@ -14,3 +14,9 @@ node_modules/
 dashboard/dist/
 .DS_Store
 *.log
+
+# validation: ignore the heavy, reproducible cache (raw EDGAR filings + prices),
+# but keep reports/cache/insider_2023_buys.json so the backtest reproduces without
+# a ~60-min EDGAR re-scan.
+reports/cache/edgar_2023/
+reports/cache/prices/

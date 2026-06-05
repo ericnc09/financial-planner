@@ -14,6 +14,13 @@
       "runtimeArgs": ["/Users/eric/financial-planner/dashboard/start.sh"],
       "port": 5173,
       "cwd": "/Users/eric/financial-planner/dashboard"
+    },
+    {
+      "name": "demo-site",
+      "runtimeExecutable": "/Users/eric/financial-planner/.venv/bin/python",
+      "runtimeArgs": ["-m", "http.server", "8099", "--directory", "reports/site"],
+      "port": 8099,
+      "cwd": "/Users/eric/financial-planner"
     }
   ]
 }
