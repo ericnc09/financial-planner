@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Money Follows — radically transparent signal validation</title>
+<meta name="description" content="A smart-money trading signal system validated with a bias-controlled, point-in-time backtest. We publish the real results — even when they lag the market.">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#161a23; --line:#2a2f3a; --fg:#e6e6e6; --dim:#9aa3b2;
+    --green:#28c76f; --blue:#5b8def; --amber:#f6c343; --red:#ea5455;
+  }
+  *{box-sizing:border-box} html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
+  a{color:var(--blue)}
+  h1,h2,h3{line-height:1.2;font-weight:800;letter-spacing:-.02em}
+  h2{font-size:28px;margin-top:0}
+  section{padding:64px 0;border-top:1px solid var(--line)}
+  .pill{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--green);background:rgba(40,199,111,.1);
+    padding:6px 12px;border-radius:999px;border:1px solid rgba(40,199,111,.3)}
+  /* hero */
+  .hero{padding:90px 0 64px;text-align:center}
+  .hero h1{font-size:48px;margin:18px 0 10px;background:linear-gradient(90deg,#fff,#9aa3b2);
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.sub{font-size:20px;color:var(--dim);max-width:680px;margin:0 auto 28px}
+  .cta{display:inline-block;background:var(--green);color:#06210f;font-weight:800;
+    padding:14px 26px;border-radius:10px;text-decoration:none}
+  .cta.alt{background:transparent;color:var(--fg);border:1px solid var(--line);margin-left:10px}
+  /* stat strip */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .stat .n{font-size:26px;font-weight:800}
+  .stat .l{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+  .card h3{margin:0 0 8px;font-size:18px}
+  .card p{margin:0;color:var(--dim);font-size:15px}
+  .chartbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-top:18px}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:14px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  td.tk{font-weight:700} td.pos{color:var(--green)} td.neg{color:var(--red)} td.dim{color:var(--dim)}
+  .callout{background:rgba(91,141,239,.08);border:1px solid rgba(91,141,239,.3);
+    border-radius:12px;padding:18px 22px;margin-top:20px}
+  .callout.warn{background:rgba(246,195,67,.08);border-color:rgba(246,195,67,.3)}
+  form{display:flex;gap:10px;max-width:520px;margin:22px auto 0;flex-wrap:wrap;justify-content:center}
+  input[type=email]{flex:1;min-width:240px;background:#0c0e14;border:1px solid var(--line);
+    color:var(--fg);padding:14px;border-radius:10px;font-size:16px}
+  .muted{color:var(--dim);font-size:13px}
+  footer{padding:40px 0 70px;color:var(--dim);font-size:13px;border-top:1px solid var(--line)}
+  @media(max-width:760px){.stats{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}.hero h1{font-size:34px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <span class="pill">Smart Money Follows</span>
+    <h1>We don't sell hope. We publish proof.</h1>
+    <p class="sub">A signal system that tracks insider &amp; smart-money buying — validated with a
+      bias-controlled, point-in-time backtest. We show you the real results, even when they
+      lag the market. <b>Especially</b> when they lag the market.</p>
+    <a class="cta" href="#signup">Follow the experiment</a>
+    <a class="cta alt" href="#method">See the method</a>
+    <div class="stats">
+      <div class="stat"><div class="n">1533</div><div class="l">real 2023 buys analyzed</div></div>
+      <div class="stat"><div class="n">100%</div><div class="l">point-in-time, no look-ahead</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">cherry-picked tickers</div></div>
+      <div class="stat"><div class="n">live</div><div class="l">track record, updated</div></div>
+    </div>
+  </div>
+
+  <section id="why">
+    <span class="pill">Why this is different</span>
+    <h2 style="margin-top:14px">Most "stock pick" sites show you the winners. We show you everything.</h2>
+    <div class="grid2" style="margin-top:24px">
+      <div class="card"><h3>No hindsight</h3><p>Every decision is frozen as of the day the trade became
+        public. Entry is the next trading day — never the trade date. Prices, momentum and macro use
+        only data that existed at the time.</p></div>
+      <div class="card"><h3>No cherry-picking</h3><p>We score <i>every</i> open-market insider buy in a
+        fixed, recognized universe (S&amp;P SmallCap 600) for the whole year, then let the model rank.
+        We never hand-pick tickers after the fact.</p></div>
+      <div class="card"><h3>No survivorship games</h3><p>Delisted names are kept and exited at their last
+        traded price. Transaction costs are deducted. Returns are measured against the S&amp;P 500 and
+        Nasdaq-100 over the identical window.</p></div>
+      <div class="card"><h3>No spin</h3><p>The current model <b>underperformed</b> a historic mega-cap
+        bull market. We're telling you that on the homepage, with the chart, because that's what honest
+        validation looks like.</p></div>
+    </div>
+  </section>
+
+  <section id="results">
+    <span class="pill">The 2023 backtest — unedited</span>
+    <h2 style="margin-top:14px">Growth of matched capital, 2023 → today</h2>
+    <p class="muted">Top 15 conviction picks, equal weight, vs. the same dollars in the S&amp;P 500 / Nasdaq-100
+      over the identical windows. Universe: S&P SmallCap 600 (Wikipedia constituents).</p>
+    <div class="chartbox"><canvas id="ec"></canvas></div>
+    <div class="stats" style="margin-top:18px">
+      <div class="stat"><div class="n">+54.2%</div><div class="l">our 15 picks</div></div>
+      <div class="stat"><div class="n">+79.7%</div><div class="l">S&amp;P 500</div></div>
+      <div class="stat"><div class="n">+111.6%</div><div class="l">Nasdaq-100</div></div>
+      <div class="stat"><div class="n">2/15</div><div class="l">picks that beat the S&amp;P</div></div>
+    </div>
+    <div class="callout warn"><b>What this tells us.</b> Our conviction picks lagged the benchmarks.
+      Interestingly, a naive equal-weight basket of <i>all</i> insider buys returned +98.7% —
+      the edge in this period was breadth, not concentration. The model's job is to beat that, and right
+      now it doesn't. That's the gap we're closing in public.</div>
+
+    <h3 style="margin-top:40px">The 15 picks, every one</h3>
+    <table>
+      <thead><tr><th>#</th><th>Ticker</th><th>Conviction</th><th>Entry</th>
+        <th>Return to date</th><th>S&amp;P (same window)</th><th>Beat?</th></tr></thead>
+      <tbody><tr><td>1</td><td class=tk>MRCY</td><td>0.883</td><td>2023-08-23</td><td class='pos'>+180.7%</td><td class=dim>+76.3%</td><td>✅</td></tr>
+<tr><td>2</td><td class=tk>TFIN</td><td>0.844</td><td>2023-02-01</td><td class='pos'>+16.7%</td><td class=dim>+91.5%</td><td>—</td></tr>
+<tr><td>3</td><td class=tk>ADT</td><td>0.836</td><td>2023-05-09</td><td class='pos'>+19.3%</td><td class=dim>+90.7%</td><td>—</td></tr>
+<tr><td>4</td><td class=tk>CVBF</td><td>0.835</td><td>2023-11-03</td><td class='pos'>+25.0%</td><td class=dim>+79.0%</td><td>—</td></tr>
+<tr><td>5</td><td class=tk>RXO</td><td>0.832</td><td>2023-11-16</td><td class='pos'>+34.9%</td><td class=dim>+72.8%</td><td>—</td></tr>
+<tr><td>6</td><td class=tk>BNL</td><td>0.829</td><td>2023-03-21</td><td class='pos'>+49.5%</td><td class=dim>+96.5%</td><td>—</td></tr>
+<tr><td>7</td><td class=tk>CFFN</td><td>0.825</td><td>2023-11-29</td><td class='pos'>+60.3%</td><td class=dim>+71.2%</td><td>—</td></tr>
+<tr><td>8</td><td class=tk>ABR</td><td>0.818</td><td>2023-11-30</td><td class='neg'>-42.5%</td><td class=dim>+70.5%</td><td>—</td></tr>
+<tr><td>9</td><td class=tk>SFNC</td><td>0.817</td><td>2023-05-05</td><td class='pos'>+47.9%</td><td class=dim>+89.9%</td><td>—</td></tr>
+<tr><td>10</td><td class=tk>PRGO</td><td>0.809</td><td>2023-11-20</td><td class='neg'>-61.3%</td><td class=dim>+71.3%</td><td>—</td></tr>
+<tr><td>11</td><td class=tk>AAP</td><td>0.799</td><td>2023-06-12</td><td class='neg'>-9.8%</td><td class=dim>+80.7%</td><td>—</td></tr>
+<tr><td>12</td><td class=tk>EMBC</td><td>0.799</td><td>2023-08-11</td><td class='neg'>-82.4%</td><td class=dim>+75.2%</td><td>—</td></tr>
+<tr><td>13</td><td class=tk>LUMN</td><td>0.796</td><td>2023-11-06</td><td class='pos'>+655.7%</td><td class=dim>+78.6%</td><td>✅</td></tr>
+<tr><td>14</td><td class=tk>SEDG</td><td>0.793</td><td>2023-11-14</td><td class='neg'>-7.1%</td><td class=dim>+73.4%</td><td>—</td></tr>
+<tr><td>15</td><td class=tk>SRPT</td><td>0.793</td><td>2023-11-07</td><td class='neg'>-80.8%</td><td class=dim>+78.1%</td><td>—</td></tr>
+</tbody>
+    </table>
+  </section>
+
+  <section id="live">
+    <span class="pill">Live track record</span>
+    <h2 style="margin-top:14px">Since launch — real signals, updated</h2>
+    <p class="muted">The actual buy signals the running system flagged (conviction ≥ 0.60) since March 2026.
+      Short window, still open — shown raw.</p>
+    <div class="chartbox"><canvas id="tec"></canvas></div>
+    <div class="stats" style="margin-top:18px">
+      <div class="stat"><div class="n">+2.7%</div><div class="l">live signals</div></div>
+      <div class="stat"><div class="n">+4.5%</div><div class="l">S&amp;P 500</div></div>
+      <div class="stat"><div class="n">+10.1%</div><div class="l">Nasdaq-100</div></div>
+      <div class="stat"><div class="n">11/31</div><div class="l">beating the S&amp;P</div></div>
+    </div>
+  </section>
+
+  <section id="method">
+    <span class="pill">The method</span>
+    <h2 style="margin-top:14px">How the validation works</h2>
+    <p class="muted">Full write-up in <code>METHODOLOGY.md</code>. The short version:</p>
+    <div class="grid2" style="margin-top:18px">
+      <div class="card"><h3>Signal</h3><p>SEC Form 4 open-market purchases (code P only — cash bets, not
+        grants). Scored on actor seniority, size, cluster buying, disclosure speed and consensus.</p></div>
+      <div class="card"><h3>Context</h3><p>Price momentum, RSI, drawdown and liquidity computed as of the
+        disclosure date; macro regime reconstructed from FRED as of that date.</p></div>
+      <div class="card"><h3>Execution</h3><p>Next-day entry, liquidity-tier transaction costs, delistings
+        exited at last price. No leverage, no shorting in the backtest.</p></div>
+      <div class="card"><h3>Honesty about limits</h3><p>One bull-market regime; insider-only (congressional
+        data was inaccessible); valuation/short-interest held neutral to avoid look-ahead. Small sample.</p></div>
+    </div>
+  </section>
+
+  <section id="signup" style="text-align:center">
+    <span class="pill">Follow the experiment</span>
+    <h2 style="margin-top:14px">Watch us try to beat the market — in public</h2>
+    <p class="sub" style="margin:10px auto 0">No performance promises. You'll get the live signals, every
+      backtest we run, and an honest log of what's working and what isn't.</p>
+    <form action="REPLACE_WITH_YOUR_FORM_ENDPOINT" method="POST"
+          onsubmit="if(this.action.indexOf('REPLACE_WITH')>-1){window.location.href='mailto:niloyericcosta@gmail.com?subject=Smart%20Money%20signup&body='+encodeURIComponent(this.email.value);return false;}">
+      <input type="email" name="email" placeholder="you@email.com" required>
+      <button class="cta" type="submit">Keep me posted</button>
+    </form>
+    <p class="muted" style="margin-top:12px">Connect the form to your email provider (Formspree, Buttondown,
+      etc.) by replacing the <code>action</code> URL. Until then it falls back to an email draft.</p>
+  </section>
+
+  <footer>
+    <b>Not investment advice.</b> Backtested / hypothetical results have inherent limitations and do not
+    represent actual trading; they may not reflect the impact of material economic and market factors.
+    Past performance — simulated or real — does not guarantee future results. This page is a research
+    demonstration. © Eric Costa.
+  </footer>
+
+</div>
+
+<script>
+const D = {"bt": {"labels": ["2023-02-01", "2023-02-08", "2023-02-15", "2023-02-23", "2023-03-02", "2023-03-09", "2023-03-16", "2023-03-23", "2023-03-30", "2023-04-06", "2023-04-14", "2023-04-21", "2023-04-28", "2023-05-05", "2023-05-12", "2023-05-19", "2023-05-26", "2023-06-05", "2023-06-12", "2023-06-20", "2023-06-27", "2023-07-05", "2023-07-12", "2023-07-19", "2023-07-26", "2023-08-02", "2023-08-09", "2023-08-16", "2023-08-23", "2023-08-30", "2023-09-07", "2023-09-14", "2023-09-21", "2023-09-28", "2023-10-05", "2023-10-12", "2023-10-19", "2023-10-26", "2023-11-02", "2023-11-09", "2023-11-16", "2023-11-24", "2023-12-01", "2023-12-08", "2023-12-15", "2023-12-22", "2024-01-02", "2024-01-09", "2024-01-17", "2024-01-24", "2024-01-31", "2024-02-07", "2024-02-14", "2024-02-22", "2024-02-29", "2024-03-07", "2024-03-14", "2024-03-21", "2024-03-28", "2024-04-05", "2024-04-12", "2024-04-19", "2024-04-26", "2024-05-03", "2024-05-10", "2024-05-17", "2024-05-24", "2024-06-03", "2024-06-10", "2024-06-17", "2024-06-25", "2024-07-02", "2024-07-10", "2024-07-17", "2024-07-24", "2024-07-31", "2024-08-07", "2024-08-14", "2024-08-21", "2024-08-28", "2024-09-05", "2024-09-12", "2024-09-19", "2024-09-26", "2024-10-03", "2024-10-10", "2024-10-17", "2024-10-24", "2024-10-31", "2024-11-07", "2024-11-14", "2024-11-21", "2024-11-29", "2024-12-06", "2024-12-13", "2024-12-20", "2024-12-30", "2025-01-07", "2025-01-15", "2025-01-23", "2025-01-30", "2025-02-06", "2025-02-13", "2025-02-21", "2025-02-28", "2025-03-07", "2025-03-14", "2025-03-21", "2025-03-28", "2025-04-04", "2025-04-11", "2025-04-21", "2025-04-28", "2025-05-05", "2025-05-12", "2025-05-19", "2025-05-27", "2025-06-03", "2025-06-10", "2025-06-17", "2025-06-25", "2025-07-02", "2025-07-10", "2025-07-17", "2025-07-24", "2025-07-31", "2025-08-07", "2025-08-14", "2025-08-21", "2025-08-28", "2025-09-05", "2025-09-12", "2025-09-19", "2025-09-26", "2025-10-03", "2025-10-10", "2025-10-17", "2025-10-24", "2025-10-31", "2025-11-07", "2025-11-14", "2025-11-21", "2025-12-01", "2025-12-08", "2025-12-15", "2025-12-22", "2025-12-30", "2026-01-07", "2026-01-14", "2026-01-22", "2026-01-29", "2026-02-05", "2026-02-12", "2026-02-20", "2026-02-27", "2026-03-06", "2026-03-13", "2026-03-20", "2026-03-27", "2026-04-06", "2026-04-13", "2026-04-20", "2026-04-27", "2026-05-04", "2026-05-11", "2026-05-18", "2026-05-26", "2026-06-02"], "portfolio": [100.0, 100.7359, 100.6707, 100.3903, 100.1488, 99.6967, 100.0824, 99.475, 100.0289, 99.6831, 99.4582, 99.1355, 99.1053, 98.84, 98.2547, 99.0643, 99.0835, 99.5958, 101.2245, 101.1117, 100.7127, 101.3749, 102.1464, 103.5998, 104.7051, 103.6671, 103.7753, 101.8436, 100.8957, 101.3615, 98.7805, 99.359, 97.5927, 97.058, 96.388, 96.6904, 96.1983, 94.7157, 97.0709, 93.8526, 98.1587, 98.1884, 102.7401, 103.8041, 113.3242, 114.2425, 114.8975, 111.1222, 105.7734, 107.3938, 104.3418, 105.9249, 106.9807, 105.7492, 105.7931, 107.7336, 105.3523, 108.3458, 110.0972, 104.7351, 100.982, 99.2085, 99.4687, 102.9522, 103.1337, 105.4426, 101.3298, 101.2574, 99.4316, 97.9741, 101.7605, 104.0719, 104.944, 113.6762, 113.8663, 123.8873, 133.5766, 129.2514, 134.5371, 130.725, 127.9049, 128.3483, 136.8626, 135.4451, 131.7105, 129.4316, 133.9822, 136.3282, 134.0916, 154.3369, 150.176, 145.7343, 150.4273, 145.8859, 140.8651, 133.4321, 130.8261, 131.2505, 131.1086, 131.2198, 127.4371, 127.556, 123.5671, 118.6147, 121.3819, 121.0752, 117.9294, 116.5324, 110.5187, 99.8123, 97.8664, 96.177, 103.8824, 107.9502, 109.7815, 108.0307, 107.917, 108.6546, 112.0662, 104.9977, 107.5897, 112.7349, 116.0268, 114.2903, 114.9686, 110.838, 106.6568, 115.6492, 115.4151, 123.8046, 123.4114, 129.0488, 126.7216, 127.3823, 132.8262, 126.4302, 130.9909, 139.8706, 145.9923, 143.1027, 129.3512, 126.4713, 131.2439, 132.6093, 132.5002, 129.7206, 128.6264, 132.7999, 138.8709, 144.8144, 142.2464, 127.8655, 135.4461, 137.5645, 131.1013, 124.3918, 121.2153, 121.3883, 121.9667, 125.6519, 135.6603, 143.9137, 144.2428, 144.1585, 138.4689, 144.9051, 153.8291, 159.361], "sp500": [100.0, 99.9976, 100.0516, 99.8354, 99.7892, 99.6878, 99.7616, 99.6423, 99.9898, 100.171, 100.2789, 100.2704, 100.3935, 100.2845, 100.2441, 100.7038, 100.7953, 101.2582, 101.6963, 102.1003, 102.0185, 102.5826, 102.8168, 103.5609, 103.586, 103.15, 102.795, 102.2098, 102.5353, 103.4215, 102.7374, 103.3494, 101.4116, 101.0917, 100.6437, 101.6646, 100.8588, 99.3119, 101.3414, 101.5961, 104.1973, 105.1607, 106.0324, 106.2865, 108.8346, 109.8364, 109.6045, 109.8897, 109.521, 112.5588, 111.9767, 115.5062, 115.6151, 117.686, 117.8204, 119.3811, 119.4136, 121.471, 121.6734, 120.5941, 118.8309, 115.1812, 118.2284, 118.9332, 121.1547, 123.1575, 123.1552, 122.7737, 124.602, 127.2631, 127.1439, 128.1194, 130.9921, 129.97, 126.3038, 128.5395, 121.0368, 126.8919, 130.8287, 130.2874, 128.2594, 130.4718, 133.2464, 133.9641, 132.9154, 134.8606, 136.3166, 135.5887, 133.1074, 139.4205, 138.8915, 138.9664, 141.045, 142.2763, 141.4336, 138.8423, 138.1541, 138.2504, 139.2251, 143.2108, 142.1046, 142.4052, 143.2061, 140.9067, 139.5539, 135.2652, 132.1861, 132.8593, 130.8994, 119.0311, 125.7827, 121.0571, 129.7663, 132.7486, 137.3376, 140.1315, 139.2599, 140.4237, 142.0703, 140.7629, 143.4449, 146.5944, 147.8631, 148.3876, 149.895, 149.3422, 149.3823, 152.383, 150.162, 153.321, 152.9241, 155.3269, 157.2478, 156.8024, 158.5533, 154.7175, 157.4113, 160.4582, 161.5978, 158.9703, 159.1977, 156.1414, 161.1737, 161.9698, 161.2827, 162.7335, 163.2516, 163.8623, 164.0476, 163.7197, 164.9221, 161.0202, 161.8876, 163.8266, 163.0092, 159.7751, 157.3774, 154.5381, 151.0879, 157.0066, 163.4806, 168.8703, 170.4072, 171.0839, 176.1568, 176.0019, 178.8469, 180.9866], "nasdaq": [100.0, 100.0764, 100.1812, 99.9092, 99.8381, 99.817, 100.1305, 100.1936, 100.4525, 100.556, 100.5787, 100.4932, 100.753, 100.7674, 100.9753, 101.9516, 102.9628, 103.5156, 103.991, 104.7068, 104.3885, 105.0572, 105.3206, 106.6508, 105.8078, 105.4833, 104.8115, 104.1874, 104.9881, 106.0727, 105.401, 106.1301, 103.4863, 103.5073, 103.6026, 105.1778, 103.782, 101.4962, 104.2683, 105.2087, 108.3037, 109.0972, 109.2242, 109.8488, 113.5378, 114.6178, 113.0522, 113.9396, 114.3495, 119.5783, 117.0903, 121.3081, 121.6535, 123.0154, 123.2766, 125.0878, 123.3159, 125.3713, 124.8483, 123.8529, 123.2343, 116.5928, 121.1901, 122.4498, 124.3, 127.0275, 128.768, 127.4127, 130.7025, 136.3909, 135.008, 137.1484, 141.6488, 135.6811, 130.5019, 132.6677, 122.4445, 130.3189, 135.8867, 132.7465, 129.8429, 133.2732, 136.1289, 138.0434, 135.821, 138.9233, 138.5454, 138.8471, 136.4584, 144.8317, 143.4639, 142.4176, 143.76, 148.4812, 149.6234, 146.2757, 145.65, 145.5286, 145.9579, 150.4607, 147.7517, 149.6019, 151.3816, 148.6076, 143.5484, 138.9213, 135.4948, 135.8282, 132.6642, 119.5743, 128.5508, 122.5278, 133.6458, 137.4707, 143.6719, 147.6778, 147.4543, 149.1743, 151.1292, 149.6779, 153.2673, 155.9975, 157.3145, 159.113, 160.0221, 160.0221, 161.2201, 164.2364, 159.5321, 163.4406, 163.1517, 166.1538, 169.7479, 168.9863, 171.0307, 167.1517, 171.2433, 174.9776, 178.3717, 172.8907, 172.6412, 167.3133, 174.9975, 177.0135, 173.1176, 175.8022, 175.8646, 177.1678, 175.8987, 176.2422, 178.7037, 169.505, 170.5299, 172.8495, 172.4179, 170.2772, 168.5652, 165.2547, 159.9255, 167.2938, 175.5064, 183.864, 188.8217, 191.2807, 202.7681, 200.6616, 207.5979, 212.1121]}, "tr": {"labels": ["2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16", "2026-04-17", "2026-04-20", "2026-04-21", "2026-04-22", "2026-04-23", "2026-04-24", "2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30", "2026-05-01", "2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07", "2026-05-08", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01", "2026-06-02", "2026-06-03"], "portfolio": [100.0, 100.0547, 99.7468, 99.2994, 100.4127, 100.3233, 100.9905, 100.293, 100.1904, 102.0747, 102.221, 105.0808, 103.954, 102.7191, 102.8657, 101.4802, 101.0792, 101.6915, 101.3038, 101.0154, 100.8262, 100.866, 101.196, 97.8112, 99.944, 99.761, 99.1001, 98.9897, 97.8563, 97.1626, 96.2368, 97.4331, 97.9019, 98.0074, 102.0724, 101.5568, 103.588, 103.717, 104.2754, 105.1906, 102.7438], "sp500": [100.0, 100.0822, 100.1385, 100.132, 100.2278, 100.3485, 100.4276, 100.4604, 100.6219, 100.5497, 100.2504, 100.7103, 100.5323, 100.8864, 100.9657, 100.7413, 100.7342, 101.1908, 101.3192, 101.1489, 101.5204, 102.1693, 102.0241, 102.4137, 102.5294, 102.4229, 102.9057, 103.6162, 102.525, 102.4574, 101.818, 102.7954, 102.9864, 103.3787, 104.0435, 104.0261, 104.5821, 104.8347, 105.1113, 105.2541, 104.5155], "nasdaq": [100.0, 100.0959, 100.162, 100.1762, 100.2781, 100.4589, 100.6008, 100.6658, 100.8434, 100.728, 100.5535, 101.3183, 101.0565, 101.9406, 101.9654, 101.4915, 101.7767, 102.2144, 102.6692, 102.5791, 103.1985, 104.2031, 104.1442, 105.3, 105.4555, 104.8347, 105.7716, 106.4317, 105.0205, 104.5965, 103.9917, 105.6073, 105.7964, 106.2313, 108.0602, 107.9411, 108.8239, 109.213, 109.8489, 110.3547, 110.0663]}};
+const palette={green:'#28c76f',blue:'#5b8def',amber:'#f6c343',line:'#2a2f3a',dim:'#9aa3b2'};
+function mk(id, d, labels){
+  const el=document.getElementById(id); if(!el||!d.labels||!d.labels.length)return;
+  new Chart(el,{type:'line',data:{labels:d.labels,datasets:[
+    {label:labels[0],data:d.portfolio,borderColor:palette.green,borderWidth:2.4,pointRadius:0,tension:.1},
+    {label:'S&P 500',data:d.sp500,borderColor:palette.blue,borderWidth:1.6,pointRadius:0,tension:.1},
+    {label:'Nasdaq-100',data:d.nasdaq,borderColor:palette.amber,borderWidth:1.6,pointRadius:0,tension:.1},
+  ]},options:{responsive:true,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{labels:{color:palette.dim}}},
+    scales:{x:{ticks:{color:palette.dim,maxTicksLimit:8},grid:{color:palette.line}},
+      y:{ticks:{color:palette.dim},grid:{color:palette.line},title:{display:true,text:'Value (start = 100)',color:palette.dim}}}}});
+}
+mk('ec', D.bt, ['Smart Money basket']);
+mk('tec', D.tr, ['Live signals']);
+</script>
+</body>
+</html>

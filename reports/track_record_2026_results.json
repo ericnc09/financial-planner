@@ -1,0 +1,877 @@
+{
+  "generated_at": "2026-06-04T02:30:22.978967",
+  "kind": "real_live_track_record",
+  "threshold": 0.6,
+  "summary": {
+    "n_signals_rows": 89,
+    "n_distinct_tickers": 31,
+    "data_hygiene_skipped": 4,
+    "avg_to_date": 0.055488,
+    "median_to_date": 0.005646,
+    "avg_sp500_to_date": 0.044123,
+    "avg_nasdaq_to_date": 0.098206,
+    "beating_sp500": "11/31",
+    "portfolio_to_date": 0.02743799999999985,
+    "sp500_to_date_matched": 0.045155000000000056,
+    "nasdaq_to_date_matched": 0.10066299999999995,
+    "note": "Window opened Mar-May 2026 and is still running; holding periods are weeks, not years."
+  },
+  "picks": [
+    {
+      "ticker": "STKL",
+      "actor": "KEATING LESLIE STARR",
+      "trade_date": "2026-04-17",
+      "disclosure_date": "2026-04-17",
+      "conviction": 0.8914,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-20",
+        "entry_price": 6.49,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.002459,
+        "exit_date_todate": "2026-05-07"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.032255,
+        "nasdaq": 0.074445
+      }
+    },
+    {
+      "ticker": "VINP",
+      "actor": "Ribeiro Sergio Passos (Chief Financial Officer)",
+      "trade_date": "2026-05-08",
+      "disclosure_date": "2026-05-08",
+      "conviction": 0.8743,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 10.5042,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.080563,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "PODC",
+      "actor": "LiveOne, Inc.",
+      "trade_date": "2026-05-11",
+      "disclosure_date": "2026-05-11",
+      "conviction": 0.8743,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-12",
+        "entry_price": 3.65,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.168603,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.021756,
+        "nasdaq": 0.052274
+      }
+    },
+    {
+      "ticker": "NEE",
+      "actor": "Rep. Richard Larsen (D-WA)",
+      "trade_date": "2026-04-07",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.8641,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 91.98,
+        "1m": -0.035963,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.084452,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "BZUN",
+      "actor": "Qiu Wenbin (Chief Executive Officer)",
+      "trade_date": "2026-04-17",
+      "disclosure_date": "2026-04-17",
+      "conviction": 0.8523,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-20",
+        "entry_price": 3.13,
+        "1m": -0.186109,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.16055,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.064228,
+        "nasdaq": 0.150621
+      }
+    },
+    {
+      "ticker": "WAB",
+      "actor": "Rep. Richard Larsen (D-WA)",
+      "trade_date": "2026-04-07",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.8523,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 263.05,
+        "1m": -0.01615,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.005026,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "MAR",
+      "actor": "Harrison Deborah Marriott",
+      "trade_date": "2026-05-11",
+      "disclosure_date": "2026-05-11",
+      "conviction": 0.8383,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-12",
+        "entry_price": 349.5401,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.073845,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.021756,
+        "nasdaq": 0.052274
+      }
+    },
+    {
+      "ticker": "BETR",
+      "actor": "Advani Loveen (Chief Financial Officer)",
+      "trade_date": "2026-05-11",
+      "disclosure_date": "2026-05-11",
+      "conviction": 0.8383,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-12",
+        "entry_price": 30.38,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.134678,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.021756,
+        "nasdaq": 0.052274
+      }
+    },
+    {
+      "ticker": "MRP",
+      "actor": "Presa Rachel (General Counsel and Secretary)",
+      "trade_date": "2026-05-11",
+      "disclosure_date": "2026-05-11",
+      "conviction": 0.8383,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-12",
+        "entry_price": 26.6,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.031338,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.021756,
+        "nasdaq": 0.052274
+      }
+    },
+    {
+      "ticker": "CRON",
+      "actor": "Weigensberg Arye (See Remarks)",
+      "trade_date": "2026-05-10",
+      "disclosure_date": "2026-05-10",
+      "conviction": 0.8084,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 2.75,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.018545,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "URI",
+      "actor": "De Shon Larry D",
+      "trade_date": "2026-05-08",
+      "disclosure_date": "2026-05-08",
+      "conviction": 0.7877,
+      "txn_cost": 0.006,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 936.2163,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.122564,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "ARXS",
+      "actor": "Oetgen Stephen Duane",
+      "trade_date": "2026-04-17",
+      "disclosure_date": "2026-04-17",
+      "conviction": 0.7824,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-20",
+        "entry_price": 37.65,
+        "1m": -0.097227,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.093742,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.064228,
+        "nasdaq": 0.150621
+      }
+    },
+    {
+      "ticker": "FLEX",
+      "actor": "WENDLER DANIEL (Chief Accounting Officer)",
+      "trade_date": "2026-05-08",
+      "disclosure_date": "2026-05-08",
+      "conviction": 0.7629,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 145.07,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.112289,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "TPC",
+      "actor": "ARKLEY PETER",
+      "trade_date": "2026-05-20",
+      "disclosure_date": "2026-05-20",
+      "conviction": 0.7603,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-21",
+        "entry_price": 74.88,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.038989,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.015511,
+        "nasdaq": 0.041567
+      }
+    },
+    {
+      "ticker": "FIHBX",
+      "actor": "Rep. Anthony Wied (R-WI)",
+      "trade_date": "2026-04-30",
+      "disclosure_date": "2026-05-11",
+      "conviction": 0.7564,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-12",
+        "entry_price": 8.9,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.002876,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.021756,
+        "nasdaq": 0.052274
+      }
+    },
+    {
+      "ticker": "ACDC",
+      "actor": "Greenwood Matthew A (Chief Commercial Officer)",
+      "trade_date": "2026-04-07",
+      "disclosure_date": "2026-04-07",
+      "conviction": 0.7493,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-08",
+        "entry_price": 6.17,
+        "1m": 0.062451,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.182386,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.115723,
+        "nasdaq": 0.227887
+      }
+    },
+    {
+      "ticker": "CRWD",
+      "actor": "Kurtz George (PRESIDENT AND CEO)",
+      "trade_date": "2026-04-16",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.7456,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 423.95,
+        "1m": 0.455677,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.759439,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "CNC",
+      "actor": "EPPINGER FREDERICK H",
+      "trade_date": "2026-05-12",
+      "disclosure_date": "2026-05-12",
+      "conviction": 0.7247,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-13",
+        "entry_price": 58.81,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.008583,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.016071,
+        "nasdaq": 0.041275
+      }
+    },
+    {
+      "ticker": "OI",
+      "actor": "Chapin Samuel R.",
+      "trade_date": "2026-05-14",
+      "disclosure_date": "2026-05-14",
+      "conviction": 0.7242,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-15",
+        "entry_price": 8.35,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.049509,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020388,
+        "nasdaq": 0.049765
+      }
+    },
+    {
+      "ticker": "TER",
+      "actor": "MATZ MARILYN",
+      "trade_date": "2026-05-08",
+      "disclosure_date": "2026-05-08",
+      "conviction": 0.7127,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 366.5016,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.113785,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "IRM",
+      "actor": "Simons Doyle",
+      "trade_date": "2026-05-07",
+      "disclosure_date": "2026-05-07",
+      "conviction": 0.7113,
+      "txn_cost": 0.006,
+      "returns": {
+        "entry_date": "2026-05-08",
+        "entry_price": 128.84,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.012908,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.022532,
+        "nasdaq": 0.04637
+      }
+    },
+    {
+      "ticker": "CASY",
+      "actor": "Rep. Richard Larsen (D-WA)",
+      "trade_date": "2026-04-07",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.7088,
+      "txn_cost": 0.006,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 754.1967,
+        "1m": 0.12881,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.020509,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "CACI",
+      "actor": "DISBROW LISA S",
+      "trade_date": "2026-04-16",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.7078,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 527.16,
+        "1m": -0.065158,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.002274,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "TRS",
+      "actor": "SEDAGHAT SHAWN",
+      "trade_date": "2026-04-14",
+      "disclosure_date": "2026-04-14",
+      "conviction": 0.6923,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-15",
+        "entry_price": 37.6138,
+        "1m": 0.058642,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.03498,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.077578,
+        "nasdaq": 0.167571
+      }
+    },
+    {
+      "ticker": "AVEX",
+      "actor": "Raduenz Brian",
+      "trade_date": "2026-04-16",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.6912,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 26.93,
+        "1m": 0.05727,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.023107,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "WPP",
+      "actor": "Rose Cindy H (Chief Executive Officer)",
+      "trade_date": "2026-05-08",
+      "disclosure_date": "2026-05-08",
+      "conviction": 0.6843,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-05-11",
+        "entry_price": 17.9,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.02076,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020208,
+        "nasdaq": 0.043348
+      }
+    },
+    {
+      "ticker": "BNZI",
+      "actor": "Davy Joseph P. (Chief Executive Officer)",
+      "trade_date": "2026-04-06",
+      "disclosure_date": "2026-04-06",
+      "conviction": 0.6705,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-07",
+        "entry_price": 11.8,
+        "1m": -0.631119,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.737051,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.14414,
+        "nasdaq": 0.264395
+      }
+    },
+    {
+      "ticker": "AXON",
+      "actor": "Kalinowski Caitlin Elizabeth",
+      "trade_date": "2026-05-29",
+      "disclosure_date": "2026-05-29",
+      "conviction": 0.6669,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-06-01",
+        "entry_price": 476.88,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.005646,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": -0.005669,
+        "nasdaq": 0.001979
+      }
+    },
+    {
+      "ticker": "SLND",
+      "actor": "Bassano Keith (CFO AND TREASURER)",
+      "trade_date": "2026-04-07",
+      "disclosure_date": "2026-04-07",
+      "conviction": 0.6654,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-08",
+        "entry_price": 1.12,
+        "1m": -0.021857,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 0.067429,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.115723,
+        "nasdaq": 0.227887
+      }
+    },
+    {
+      "ticker": "AGPU",
+      "actor": "Yaukey-Witter Jeremy Reese (Co-Chief Financial Officer)",
+      "trade_date": "2026-04-16",
+      "disclosure_date": "2026-04-16",
+      "conviction": 0.6469,
+      "txn_cost": 0.004,
+      "returns": {
+        "entry_date": "2026-04-17",
+        "entry_price": 3.52,
+        "1m": 0.325545,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": 1.305659,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.0621,
+        "nasdaq": 0.146968
+      }
+    },
+    {
+      "ticker": "CVS",
+      "actor": "KIRBY J SCOTT",
+      "trade_date": "2026-05-14",
+      "disclosure_date": "2026-05-14",
+      "conviction": 0.6418,
+      "txn_cost": 0.006,
+      "returns": {
+        "entry_date": "2026-05-15",
+        "entry_price": 95.89,
+        "1m": null,
+        "3m": null,
+        "6m": null,
+        "12m": null,
+        "to_date": -0.053137,
+        "exit_date_todate": "2026-06-03"
+      },
+      "benchmark_to_date": {
+        "sp500": 0.020388,
+        "nasdaq": 0.049765
+      }
+    }
+  ],
+  "equity_curve": {
+    "dates": [
+      "2026-04-07",
+      "2026-04-08",
+      "2026-04-09",
+      "2026-04-10",
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15",
+      "2026-04-16",
+      "2026-04-17",
+      "2026-04-20",
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28",
+      "2026-05-29",
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03"
+    ],
+    "portfolio": [
+      100.0,
+      100.0547,
+      99.7468,
+      99.2994,
+      100.4127,
+      100.3233,
+      100.9905,
+      100.293,
+      100.1904,
+      102.0747,
+      102.221,
+      105.0808,
+      103.954,
+      102.7191,
+      102.8657,
+      101.4802,
+      101.0792,
+      101.6915,
+      101.3038,
+      101.0154,
+      100.8262,
+      100.866,
+      101.196,
+      97.8112,
+      99.944,
+      99.761,
+      99.1001,
+      98.9897,
+      97.8563,
+      97.1626,
+      96.2368,
+      97.4331,
+      97.9019,
+      98.0074,
+      102.0724,
+      101.5568,
+      103.588,
+      103.717,
+      104.2754,
+      105.1906,
+      102.7438
+    ],
+    "sp500": [
+      100.0,
+      100.0822,
+      100.1385,
+      100.132,
+      100.2278,
+      100.3485,
+      100.4276,
+      100.4604,
+      100.6219,
+      100.5497,
+      100.2504,
+      100.7103,
+      100.5323,
+      100.8864,
+      100.9657,
+      100.7413,
+      100.7342,
+      101.1908,
+      101.3192,
+      101.1489,
+      101.5204,
+      102.1693,
+      102.0241,
+      102.4137,
+      102.5294,
+      102.4229,
+      102.9057,
+      103.6162,
+      102.525,
+      102.4574,
+      101.818,
+      102.7954,
+      102.9864,
+      103.3787,
+      104.0435,
+      104.0261,
+      104.5821,
+      104.8347,
+      105.1113,
+      105.2541,
+      104.5155
+    ],
+    "nasdaq": [
+      100.0,
+      100.0959,
+      100.162,
+      100.1762,
+      100.2781,
+      100.4589,
+      100.6008,
+      100.6658,
+      100.8434,
+      100.728,
+      100.5535,
+      101.3183,
+      101.0565,
+      101.9406,
+      101.9654,
+      101.4915,
+      101.7767,
+      102.2144,
+      102.6692,
+      102.5791,
+      103.1985,
+      104.2031,
+      104.1442,
+      105.3,
+      105.4555,
+      104.8347,
+      105.7716,
+      106.4317,
+      105.0205,
+      104.5965,
+      103.9917,
+      105.6073,
+      105.7964,
+      106.2313,
+      108.0602,
+      107.9411,
+      108.8239,
+      109.213,
+      109.8489,
+      110.3547,
+      110.0663
+    ]
+  }
+}
