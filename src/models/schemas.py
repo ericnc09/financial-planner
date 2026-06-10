@@ -11,6 +11,7 @@ class Direction(str, Enum):
 class SourceType(str, Enum):
     CONGRESSIONAL = "congressional"
     INSIDER = "insider"
+    INSTITUTIONAL = "institutional"  # 13F filers (hedge funds, asset managers)
 
 
 class MacroRegime(str, Enum):

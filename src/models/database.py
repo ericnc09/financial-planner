@@ -25,6 +25,7 @@ class Base(DeclarativeBase):
 class SourceType(enum.Enum):
     CONGRESSIONAL = "congressional"
     INSIDER = "insider"
+    INSTITUTIONAL = "institutional"  # 13F filers (hedge funds, asset managers)
 
 
 class Direction(enum.Enum):
@@ -474,6 +475,50 @@ class OptionsFlow(Base):
     __table_args__ = (
         UniqueConstraint("ticker", "analysis_date", name="uq_options_ticker_date"),
     )
+
+
+class NewsSentimentResult(Base):
+    __tablename__ = "news_sentiment_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    run_date = Column(DateTime, nullable=False)
+    # Bias guard: the evaluation cutoff — only articles published <= as_of
+    # were used. Stored so backtests can prove no future news leaked in.
+    as_of = Column(DateTime, nullable=False)
+
+    n_articles = Column(Integer, nullable=True)
+    n_articles_3d = Column(Integer, nullable=True)
+    news_volume_z = Column(Float, nullable=True)
+    news_sentiment_mean = Column(Float, nullable=True)
+    news_sentiment_trend_3d = Column(Float, nullable=True)
+    sentiment_model = Column(String(30), nullable=True)  # finbert/vader/lexicon
+    earliest_article_at = Column(DateTime, nullable=True)
+    latest_article_at = Column(DateTime, nullable=True)
+    articles_json = Column(Text, nullable=True)  # [{headline, source, published_at, sentiment}]
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "run_date", name="uq_news_ticker_date"),
+    )
+
+
+class MacroExtraData(Base):
+    __tablename__ = "macro_extra_data"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(DateTime, nullable=False, unique=True, index=True)
+
+    # BLS
+    payrolls_yoy_pct = Column(Float, nullable=True)        # CES0000000001 YoY %
+    unemployment_rate = Column(Float, nullable=True)       # LNS14000000
+    # Treasury FiscalData
+    treasury_avg_rate = Column(Float, nullable=True)       # avg marketable interest rate %
+    total_public_debt = Column(Float, nullable=True)       # debt to the penny, USD
+
+    detail_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # --- Engine / Session helpers ---

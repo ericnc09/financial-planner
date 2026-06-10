@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     # API Keys (edgar + congress are free, no keys needed)
     tiingo_api_key: str = ""
     fred_api_key: str = ""
+    finnhub_api_key: str | None = None  # free tier: 60 req/min — news primary
+    bls_api_key: str | None = None      # optional; raises BLS quota 25→500/day
 
     # Database
     database_url: str = "sqlite:///./smart_money.db"

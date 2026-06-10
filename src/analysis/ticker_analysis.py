@@ -47,8 +47,19 @@ async def analyze_ticker(
     garch: GARCHForecaster,
     copula: CopulaTailRisk,
     ensemble: EnsembleScorer,
+    news_client=None,
+    news_analyzer=None,
+    weather=None,
+    sector: str | None = None,
 ) -> dict | None:
-    """Run all models on a single ticker and return results with verdict."""
+    """Run all models on a single ticker and return results with verdict.
+
+    Optional integrations (skipped when not provided):
+        news_client/news_analyzer: NewsClient + NewsSentimentAnalyzer —
+            adds the news_sentiment ensemble component.
+        weather: WeatherOverlay — adds the weather_overlay component for
+            weather-sensitive sectors (requires `sector`).
+    """
     price_data = await yahoo.get_price_history(ticker, days=504)
     if price_data is None:
         logger.warning("ticker_analysis.no_data", ticker=ticker)
@@ -59,31 +70,49 @@ async def analyze_ticker(
     volumes = price_data["volumes"]
     current_price = float(closes[-1])
 
-    # Run compute-heavy models concurrently
+    # Return dates: returns = diff(log(closes)), so returns[i] is dated dates[i+1]
+    return_dates = price_data["dates"][1:] if price_data.get("dates") else None
+
+    # Run compute-heavy models concurrently.
+    # Earnings overlay is direction-dependent — score both directions so the
+    # sell ensemble isn't fed a buy-aligned score.
     hmm_task = hmm.fit_and_predict(returns, volumes)
     garch_task = garch.forecast(returns, horizons=[5, 20])
-    earnings_task = _earnings_overlay().analyze(ticker, datetime.now(), direction="buy")
+    earnings_buy_task = _earnings_overlay().analyze(ticker, datetime.now(), direction="buy")
+    earnings_sell_task = _earnings_overlay().analyze(ticker, datetime.now(), direction="sell")
 
     mc_result = mc.simulate(closes, horizons=[21, 63, 126])
-    hmm_result, garch_result, earnings_result = await asyncio.gather(
-        hmm_task, garch_task, earnings_task
+    hmm_result, garch_result, earnings_result, earnings_sell_result = await asyncio.gather(
+        hmm_task, garch_task, earnings_buy_task, earnings_sell_task
     )
 
-    # Fama-French
+    # Fama-French (date-joined to avoid lag misalignment)
     ff_result = None
     if ff_factors is not None:
-        ff_result = ff_client.compute_factor_exposure(returns, ff_factors)
+        ff_result = ff_client.compute_factor_exposure(
+            returns, ff_factors, stock_dates=return_dates
+        )
 
-    # Copula (needs market returns from FF Mkt-RF)
+    # Copula (needs market returns from FF Mkt-RF, joined on dates)
     copula_result = None
     if ff_factors is not None and "Mkt-RF" in ff_factors.columns:
-        mkt_returns = ff_factors["Mkt-RF"].values
-        n = min(len(returns), len(mkt_returns))
-        if n >= 60:
-            copula_result = copula.analyze(returns[-n:], mkt_returns[-n:])
+        aligned = ff_client.align_stock_to_factors(returns, return_dates, ff_factors)
+        if aligned is not None:
+            stock_aligned, factor_rows, _ = aligned
+            if len(stock_aligned) >= 60:
+                copula_result = copula.analyze(
+                    stock_aligned, factor_rows["Mkt-RF"].values
+                )
+        else:
+            # No dates available — fall back to tail alignment
+            mkt_returns = ff_factors["Mkt-RF"].values
+            n = min(len(returns), len(mkt_returns))
+            if n >= 60:
+                copula_result = copula.analyze(returns[-n:], mkt_returns[-n:])
 
     # C6: Bayesian decay with regime-conditional prior from HMM state
     bayesian_result = None
+    bayesian_sell_result = None
     hmm_regime_state = None
     if hmm_result:
         hmm_regime_state = hmm_result.get("current_state")
@@ -93,6 +122,28 @@ async def analyze_ticker(
         abnormal = returns[-40:] - mean_ret
         bd = BayesianDecayAnalyzer(regime=hmm_regime_state)
         bayesian_result = bd.analyze(abnormal, direction="buy")
+        # Sell-side decay: alpha for a seller is the inverted abnormal return
+        bd_sell = BayesianDecayAnalyzer(regime=hmm_regime_state)
+        bayesian_sell_result = bd_sell.analyze(-abnormal, direction="sell")
+
+    # News sentiment (bias-guarded inside the analyzer via as_of=now)
+    news_result = None
+    if news_client is not None and news_analyzer is not None:
+        try:
+            articles = await news_client.get_company_news(ticker, days=14)
+            news_result = news_analyzer.analyze(ticker, articles)
+        except Exception as e:
+            logger.debug("ticker_analysis.news_failed", ticker=ticker, error=str(e))
+
+    # Weather overlay (only contributes for weather-sensitive sectors)
+    weather_buy = weather_sell = None
+    if weather is not None and sector:
+        try:
+            weather_ctx = await weather.get_context()
+            weather_buy = weather.score(sector, "buy", weather_ctx)
+            weather_sell = weather.score(sector, "sell", weather_ctx)
+        except Exception as e:
+            logger.debug("ticker_analysis.weather_failed", ticker=ticker, error=str(e))
 
     # Flatten GARCH ratios for ensemble scorer
     garch_for_ensemble = None
@@ -107,7 +158,7 @@ async def analyze_ticker(
     if _xgb_classifier.is_trained:
         xgb_features = _build_xgb_features(
             hmm_result, garch_result, ff_result, copula_result, closes, returns,
-            direction="buy",
+            direction="buy", news_result=news_result,
         )
         xgb_raw = _xgb_classifier.predict(xgb_features)
         if xgb_raw:
@@ -129,6 +180,8 @@ async def analyze_ticker(
         copula=copula_result,
         earnings_overlay=earnings_result,
         bayesian_decay=bayesian_result,
+        news_sentiment=news_result,
+        weather_overlay=weather_buy,
     )
     sell_score = ensemble.score(
         direction="sell",
@@ -137,8 +190,10 @@ async def analyze_ticker(
         garch=garch_for_ensemble,
         fama_french=ff_result,
         copula=copula_result,
-        earnings_overlay=earnings_result,
-        bayesian_decay=bayesian_result,
+        earnings_overlay=earnings_sell_result,
+        bayesian_decay=bayesian_sell_result,
+        news_sentiment=news_result,
+        weather_overlay=weather_sell,
     )
 
     # Determine verdict
@@ -188,6 +243,8 @@ async def analyze_ticker(
             "earnings": earnings_result,
             "bayesian_decay": bayesian_result,
             "xgboost": xgb_result,
+            "news_sentiment": news_result,
+            "weather": weather_buy,
         },
         "buy_components": buy_score.get("components", {}),
         "sell_components": sell_score.get("components", {}),
@@ -203,10 +260,16 @@ def _earnings_overlay() -> EarningsOverlay:
 
 def _build_xgb_features(
     hmm_result, garch_result, ff_result, copula_result,
-    closes, returns, direction: str,
+    closes, returns, direction: str, news_result: dict | None = None,
 ) -> dict:
     """Build XGBoost feature dict from model outputs + price data."""
     features: dict = {}
+
+    # News sentiment features (bias-guarded upstream)
+    if news_result:
+        features["news_volume_z"] = news_result.get("news_volume_z", 0.0)
+        features["news_sentiment_mean"] = news_result.get("news_sentiment_mean", 0.0)
+        features["news_sentiment_trend_3d"] = news_result.get("news_sentiment_trend_3d", 0.0)
 
     # HMM features
     if hmm_result:

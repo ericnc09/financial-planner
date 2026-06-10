@@ -111,7 +111,8 @@ class EventStudyAnalyzer:
         if direction == "sell":
             abnormal_returns = -abnormal_returns
 
-        # Cumulative abnormal returns
+        # Cumulative abnormal returns over the full window (incl. pre-event days,
+        # kept for plotting/diagnostics of pre-event drift)
         car = np.cumsum(abnormal_returns)
         daily_cars = [round(float(c), 6) for c in car]
 
@@ -119,11 +120,16 @@ class EventStudyAnalyzer:
         days = list(range(self.evt_start, self.evt_end + 1))
         event_day_0_offset = -self.evt_start  # index of day 0 in the arrays
 
-        # Extract CAR at key horizons
+        # CAR at key horizons, measured from day 0 — NOT from the window start.
+        # Accumulating from day -5 would mix pre-event drift (insiders buy after
+        # dips; congressional trades can leak early) into the post-event alpha
+        # estimate, biasing every horizon by up to 5 days of pre-event AR.
+        car_before_event = float(car[event_day_0_offset - 1]) if event_day_0_offset > 0 else 0.0
+
         def car_at_day(d: int) -> float | None:
             idx = d - self.evt_start
             if 0 <= idx < len(car):
-                return round(float(car[idx]), 6)
+                return round(float(car[idx]) - car_before_event, 6)
             return None
 
         car_1d = car_at_day(1)
@@ -131,16 +137,17 @@ class EventStudyAnalyzer:
         car_10d = car_at_day(10)
         car_20d = car_at_day(min(20, self.evt_end))
 
-        # T-statistic for the post-event CAR
-        # Using standardized CAR: t = CAR / (sigma_est * sqrt(n_actual_post_days))
-        # n_post = actual number of event-window observations (not hardcoded horizon)
-        n_post = len(evt_stock)
-        t_stat = float(car[-1]) / (sigma_est * np.sqrt(n_post)) if sigma_est > 0 and n_post > 0 else 0
+        # T-statistic for the post-event CAR (day 0 through window end)
+        # Using standardized CAR: t = CAR / (sigma_est * sqrt(n_post_days))
+        post_event_ars = abnormal_returns[event_day_0_offset:]
+        n_post = len(post_event_ars)
+        car_post = float(car[-1]) - car_before_event
+        t_stat = car_post / (sigma_est * np.sqrt(n_post)) if sigma_est > 0 and n_post > 0 else 0
         p_value_param = float(2 * (1 - stats.t.cdf(abs(t_stat), df=len(est_stock) - 2)))
 
         # Bootstrap significance test (distribution-free, robust to non-normality)
         p_value_boot = self._bootstrap_test(
-            est_residuals, abnormal_returns, n_boot=2000
+            est_residuals, post_event_ars, n_boot=2000
         )
 
         # Use the more conservative (higher) p-value

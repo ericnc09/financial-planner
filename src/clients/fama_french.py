@@ -78,18 +78,75 @@ class FamaFrenchClient:
             logger.warning("fama_french.load_failed", error=str(e))
             return None
 
-    def compute_factor_exposure(
-        self, stock_returns: np.ndarray, factors: pd.DataFrame
-    ) -> dict | None:
-        """Run Fama-French regression. Returns alpha, betas, R-squared."""
-        try:
-            n = min(len(stock_returns), len(factors))
-            if n < 30:
-                return None
+    @staticmethod
+    def _to_naive_index(dates) -> pd.DatetimeIndex:
+        """Convert a list of (possibly tz-aware) dates to a naive, normalized index."""
+        idx = pd.DatetimeIndex(pd.to_datetime(list(dates)))
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        return idx.normalize()
 
-            y = stock_returns[-n:]
-            X = factors.iloc[-n:][["Mkt-RF", "SMB", "HML", "RMW", "CMA"]].values
-            rf = factors.iloc[-n:]["RF"].values
+    def align_stock_to_factors(
+        self,
+        stock_returns: np.ndarray,
+        stock_dates,
+        factors: pd.DataFrame,
+    ) -> tuple[np.ndarray, pd.DataFrame, pd.DatetimeIndex] | None:
+        """
+        Date-join stock returns to factor rows.
+
+        FF factors are published with a multi-week lag, so tail-aligning the
+        two arrays (factors.iloc[-n:] vs returns[-n:]) silently shifts every
+        observation by that lag. This joins on actual dates instead.
+
+        Args:
+            stock_returns: Daily returns array.
+            stock_dates: Dates aligned 1:1 with stock_returns.
+            factors: Factor DataFrame indexed by date.
+
+        Returns:
+            (aligned_stock_returns, aligned_factor_rows, common_dates) or None.
+        """
+        if stock_dates is None or len(stock_dates) != len(stock_returns):
+            return None
+        idx = self._to_naive_index(stock_dates)
+        stock = pd.Series(np.asarray(stock_returns, dtype=float), index=idx)
+        # Drop any duplicate dates (defensive — splits/timezone edge cases)
+        stock = stock[~stock.index.duplicated(keep="last")]
+        common = factors.index.intersection(stock.index)
+        if len(common) == 0:
+            return None
+        return stock.loc[common].values, factors.loc[common], common
+
+    def compute_factor_exposure(
+        self,
+        stock_returns: np.ndarray,
+        factors: pd.DataFrame,
+        stock_dates=None,
+    ) -> dict | None:
+        """Run Fama-French regression. Returns alpha, betas, R-squared.
+
+        Pass stock_dates (aligned 1:1 with stock_returns) to join on actual
+        dates; without dates this falls back to tail alignment, which is
+        biased whenever the FF data lags the price data.
+        """
+        try:
+            aligned = self.align_stock_to_factors(stock_returns, stock_dates, factors)
+            if aligned is not None:
+                y, factor_rows, _ = aligned
+                n = len(y)
+                if n < 30:
+                    return None
+                X = factor_rows[["Mkt-RF", "SMB", "HML", "RMW", "CMA"]].values
+                rf = factor_rows["RF"].values
+            else:
+                logger.debug("fama_french.tail_alignment_fallback")
+                n = min(len(stock_returns), len(factors))
+                if n < 30:
+                    return None
+                y = stock_returns[-n:]
+                X = factors.iloc[-n:][["Mkt-RF", "SMB", "HML", "RMW", "CMA"]].values
+                rf = factors.iloc[-n:]["RF"].values
             y_excess = y - rf
 
             # Add intercept

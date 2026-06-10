@@ -1,8 +1,8 @@
 # Smart Money Follows
 
-**Track what insiders and Congress are buying before the market catches on.**
+**Track what insiders, Congress, and elite funds are buying before the market catches on.**
 
-Smart Money Follows is an automated trading signal platform that ingests insider and congressional trade disclosures, enriches them with fundamentals and macro data, runs 9 quantitative models, and produces a scored, ranked feed of actionable trading signals through a real-time React dashboard.
+Smart Money Follows is an automated trading signal platform that ingests insider, congressional, and 13F institutional trade disclosures, enriches them with point-in-time SEC XBRL fundamentals, news sentiment, weather, and macro data, runs an 11-component quantitative ensemble, and produces a scored, ranked feed of trading signals — including a daily **Morning Top Pick** — through a real-time React dashboard with industry-level filtering.
 
 ---
 
@@ -47,6 +47,13 @@ TIINGO_API_KEY=your_tiingo_key_here
 
 # Optional — Slack alerts for high-conviction signals
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Optional — Finnhub (free, 60 req/min) makes it the primary news source;
+# without it news falls back to GDELT only (keyless, throttled to 1 req/6s)
+FINNHUB_API_KEY=your_finnhub_key_here
+
+# Optional — raises the BLS quota from 25 to 500 req/day
+BLS_API_KEY=your_bls_key_here
 
 # Database (defaults to SQLite)
 DATABASE_URL=sqlite:///./smart_money.db
@@ -104,22 +111,22 @@ make test
 ### Pipeline Flow
 
 ```
-Signal Ingestion       Enrichment        Analysis Models        Scoring & Alerts
+Signal Ingestion        Enrichment           Analysis Models        Scoring & Alerts
 
-SEC EDGAR (Form 4) ─┐                   Monte Carlo            Conviction Engine
-                     ├─> Ingest ─> Enrich ─> Models ─> Ensemble ─> Score ─> Alert
-Capitol Trades ─────┘    |           |                              |         |
-                       Yahoo      FRED                           Dashboard  Slack
-                      Finance     Macro                          (React)   Webhook
+SEC EDGAR (Form 4) ──┐                       Monte Carlo            Conviction Engine
+Capitol Trades ──────┼─> Ingest ─> Enrich ─> Models ─> Ensemble ─> Score ─> Top Pick ─> Alert
+SEC 13F (8 funds) ───┘    |          |                                |          |
+                        Yahoo +   FRED + BLS                       Dashboard   Slack
+                       SEC XBRL   + Treasury                       (React)    Webhook
 ```
 
-**Step 1 — Ingest:** Fetches insider trades (SEC EDGAR Form 4 XML) and congressional trades (Capitol Trades) from the last 14 days. Deduplicates by (ticker, actor, trade_date, source_type).
+**Step 1 — Ingest:** Fetches insider trades (SEC EDGAR Form 4 XML), congressional trades (Capitol Trades), and quarterly 13F holdings diffs from 8 curated institutional funds (Berkshire, Pershing Square, Scion, Bridgewater, RenTech, Tiger Global, Appaloosa, Third Point) — new positions and ≥25% adds are BUYs, full exits are SELLs. Deduplicates by (ticker, actor, trade_date, source_type).
 
-**Step 2 — Enrich:** For each signal ticker, fetches fundamentals via yfinance (P/E, market cap, EPS, sector, momentum, RSI, drawdown). Falls back to Tiingo if yfinance fails.
+**Step 2 — Enrich:** For each signal ticker, fetches price action via yfinance (momentum, RSI, drawdown, volume), then overlays **point-in-time SEC XBRL fundamentals** (EPS TTM with Q4 synthesis, EPS/revenue YoY growth, P/E recomputed from price ÷ XBRL TTM EPS) — filings-derived values that only use data filed on or before the evaluation date. Falls back to Tiingo if yfinance fails.
 
-**Step 3 — Macro Context:** Fetches economic indicators from FRED (yield spread, unemployment claims, CPI, fed funds rate, VIX, consumer sentiment, M2, housing starts, put/call ratio). Classifies regime as expansion/transition/recession.
+**Step 3 — Macro Context:** Fetches economic indicators from FRED (yield spread, unemployment claims, CPI, fed funds rate, VIX, consumer sentiment, M2, housing starts), plus BLS (payrolls YoY, unemployment rate) and Treasury FiscalData (avg marketable rate, total public debt). Classifies regime as expansion/transition/recession.
 
-**Step 4 — Analysis Models (9 models per ticker):**
+**Step 4 — Analysis Models (11 ensemble components per ticker):**
 
 | Model | What It Does |
 |---|---|
@@ -132,12 +139,16 @@ Capitol Trades ─────┘    |           |                              
 | **Bayesian Decay** | Exponential decay with Gamma prior. Posterior half-life, entry/exit windows, decay quality classification. |
 | **Mean-Variance** | Markowitz optimization across all signal tickers. Max-Sharpe, min-variance, risk contribution. |
 | **Options Flow** | Options chain analysis via yfinance. Put/call ratio, IV skew, unusual volume, max pain. |
+| **News Sentiment** | Finnhub + GDELT headlines scored by FinBERT → VADER → lexicon fallback. Three features: `news_volume_z` (attention), `news_sentiment_mean`, `news_sentiment_trend_3d`. Bias-guarded: only articles published before evaluation time count, timestamps persisted. |
+| **Weather Overlay** | Open-Meteo degree-day delta (6 US metros) + NWS severe-weather alerts. Only contributes for weather-sensitive sectors: Energy (fuel demand), Utilities (power demand), Insurance (claims risk), Agriculture (crop stress), Airlines (disruption). |
 
-**Step 5 — Ensemble Scoring:** Weighted combination of all 9 models into a single 0-100 score with recommendation (strong_buy / buy / hold / avoid). Requires 4+ models to independently agree (≥50) before issuing buy/sell — eliminates ~30% of spurious signals from the multiple-testing problem.
+**Step 5 — Ensemble Scoring:** Weighted combination of up to 11 components into a single 0-100 score with recommendation (strong_buy / buy / hold / avoid). Requires 4+ models to independently agree (≥50) before issuing buy/sell — eliminates ~30% of spurious signals from the multiple-testing problem.
 
 **Step 6 — Conviction Scoring:** Multi-factor model combining signal strength (40%), fundamental quality (35%), and macro regime modifier (25%) into a 0-1 conviction score. Threshold adapts to regime and volatility (0.45–0.80 range).
 
-**Step 7 — Alerts:** If Slack is configured, sends formatted alerts for signals passing the conviction threshold and for ensemble scores > 70.
+**Step 7 — Morning Top Pick:** Every pipeline run (including no-new-signal mornings) selects the single stock most probable for near-term outperformance — a blend of conviction (40%), ensemble score (40%), Monte Carlo 30-day P(profit) (20%), plus a multi-actor cluster bonus. Delivered via Slack, `/api/top-pick`, and the dashboard's Top Pick card.
+
+**Step 8 — Alerts:** If Slack is configured, sends formatted alerts for signals passing the conviction threshold, ensemble scores > 70, and the daily top pick.
 
 ---
 
@@ -148,11 +159,20 @@ All data sources are **free and require no paid subscriptions** (FRED key is fre
 | Source | What | Rate Limits |
 |---|---|---|
 | **SEC EDGAR** | Insider trades (Form 4 filings) | Free, no key needed |
+| **SEC EDGAR XBRL** | Point-in-time fundamentals from 10-K/10-Q company facts | Free, no key needed (10 req/s) |
+| **SEC EDGAR 13F** | Institutional holdings of 8 curated funds | Free, no key needed |
 | **Capitol Trades** | Congressional trade disclosures | Free, no key needed |
-| **Yahoo Finance** (yfinance) | Price history, fundamentals, options chains, enrichment | Free, unlimited |
+| **Yahoo Finance** (yfinance) | Price history, options chains, price-action enrichment | Free, unlimited |
 | **FRED** | Macro indicators (yield curve, CPI, VIX, M2, etc.) | Free key, generous limits |
+| **BLS** | Payrolls, unemployment rate | Free; 25/day (500 with free key) |
+| **Treasury FiscalData** | Avg Treasury rates, public debt | Free, no key needed |
+| **Finnhub** | Per-ticker company news (primary news source) | Free key, 60 req/min |
+| **GDELT 2.0** | Global news breadth (keyless fallback) | Free; hard 1 req/5s limit (client throttles to 6s) |
+| **Open-Meteo + NWS** | Weather forecast anomalies + severe-weather alerts | Free, no key needed |
 | **Fama-French** (pandas-datareader) | 5-factor model data | Free, no key needed |
 | **Tiingo** | Fallback enrichment + price history | Free key, 2000 req/month |
+
+See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) for the full catalog of additional free sources and integration notes.
 
 ---
 
@@ -160,9 +180,13 @@ All data sources are **free and require no paid subscriptions** (FRED key is fre
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/signals` | GET | All signals with filters: `days`, `source`, `min_conviction` |
+| `/api/top-pick` | GET | The single stock most probable for near-term outperformance (`lookback_days` param) |
+| `/api/sectors` | GET | Industry/sector breakdown of recent activity — counts, avg conviction/ensemble, top ticker per sector |
+| `/api/signals` | GET | All signals with filters: `days`, `source`, `min_conviction`, `sector` |
 | `/api/signals/{ticker}` | GET | Signals for a specific ticker |
-| `/api/analysis/{ticker}` | GET | All 9 model results for a ticker |
+| `/api/news/{ticker}` | GET | Latest news-sentiment features + scored headlines for a ticker |
+| `/api/macro/extra` | GET | BLS payrolls/unemployment + Treasury rates/debt snapshot |
+| `/api/analysis/{ticker}` | GET | All model results for a ticker |
 | `/api/analysis/{ticker}/options` | GET | Options flow analysis for a ticker |
 | `/api/analysis/hmm/all` | GET | HMM regime states for all tickers |
 | `/api/analysis/mean-variance` | GET | Portfolio optimization results |
@@ -187,7 +211,9 @@ All data sources are **free and require no paid subscriptions** (FRED key is fre
 
 The React dashboard provides:
 
-- **Signal Table** — sortable by conviction, date, ticker. Filterable by source. CSV/JSON export.
+- **Morning Top Pick Card** — the day's highest-probability stock with composite score, conviction, ensemble, Monte Carlo P(profit), signal context, and runners-up.
+- **Industry Panel** — pick one industry and see what happened there: signal counts, buy/sell split, avg conviction/ensemble, top ticker, member tickers. Selecting a sector filters the signal table and stat cards.
+- **Signal Table** — sortable by conviction, date, ticker. Filterable by source and sector. CSV/JSON export.
 - **Macro Gauge** — SVG regime indicator with yield spread, unemployment, CPI, fed funds.
 - **Extended Macro** — VIX, consumer sentiment, M2, housing starts, industrial production.
 - **Performance Panel** — Win rates, average returns by direction/source/conviction bucket, top winners/losers.
@@ -217,11 +243,15 @@ financial-planner/
 ├── src/
 │   ├── clients/
 │   │   ├── edgar.py              # SEC EDGAR Form 4 parser
+│   │   ├── edgar_xbrl.py         # ★ SEC XBRL point-in-time fundamentals
+│   │   ├── edgar_13f.py          # ★ 13F institutional holdings diffs (8 funds)
 │   │   ├── congress.py           # Capitol Trades scraper
+│   │   ├── news.py               # ★ Finnhub + GDELT news client (throttled)
+│   │   ├── macro_extra.py        # ★ BLS + Treasury FiscalData
 │   │   ├── yahoo.py              # yfinance: prices, enrichment, options
 │   │   ├── tiingo.py             # Tiingo fallback client
 │   │   ├── fred.py               # FRED macro indicators
-│   │   ├── fama_french.py        # Fama-French factor data
+│   │   ├── fama_french.py        # Fama-French factors (date-joined alignment)
 │   │   └── options.py            # Options chain analysis
 │   ├── analysis/
 │   │   ├── monte_carlo.py           # Monte Carlo simulation
@@ -238,7 +268,10 @@ financial-planner/
 │   │   ├── adversarial_validation.py# ★ Train/test distribution shift detection
 │   │   ├── ic_monitor.py            # ★ Rolling IC/ICIR signal quality monitor
 │   │   ├── correlation_filter.py    # ★ Cross-asset cluster dampening
-│   │   └── structural_breaks.py     # ★ CUSUM + variance ratio break detection
+│   │   ├── structural_breaks.py     # ★ CUSUM + variance ratio break detection
+│   │   ├── news_sentiment.py        # ★ FinBERT/VADER sentiment features (bias-guarded)
+│   │   ├── weather_overlay.py       # ★ Sector-aware weather impact scoring
+│   │   └── top_pick.py              # ★ Morning top-pick selection
 │   ├── scoring/
 │   │   ├── conviction_engine.py  # Combined conviction + adaptive threshold
 │   │   ├── signal_scorer.py      # 5-factor signal scoring
@@ -262,6 +295,8 @@ financial-planner/
 │   └── src/
 │       ├── components/
 │       │   ├── Dashboard.tsx          # Main layout
+│       │   ├── TopPickCard.tsx         # Morning top-pick card
+│       │   ├── SectorPanel.tsx         # Industry picker + sector stats
 │       │   ├── StockPriceChart.tsx     # Historical price chart with ticker/range selector
 │       │   ├── SignalTable.tsx         # Signal table with export
 │       │   ├── MacroGauge.tsx          # SVG regime gauge
@@ -311,6 +346,9 @@ This system implements institutional-grade statistical safeguards to eliminate f
 - **Deflated Sharpe Ratio** (`validator.py` D6) — corrects Sharpe for number of strategies tried (Bailey & Lopez de Prado, 2014). DSR p-value > 0.05 means the Sharpe isn't distinguishable from lucky chance.
 
 ### Bias Reduction
+- **Full model audit (2026-06)** — every analysis/scoring module reviewed for statistical bias; 10 genuine defects fixed, including Monte Carlo drift double-correction, Fama-French/copula/event-study date misalignment against lagged FF data, pre-event drift contaminating CARs, a no-op walk-forward optimizer, and Granger multiple-testing inflation. Findings and remaining strategy-level caveats: [docs/ML_MODEL_REVIEW.md](docs/ML_MODEL_REVIEW.md).
+- **News lookahead guard** (`news_sentiment.py`) — every article carries its publication timestamp; scoring at time T silently drops anything published after T, and timestamps are persisted so backtests can prove no future news leaked in.
+- **Point-in-time fundamentals** (`edgar_xbrl.py`) — only facts with `filed <= as_of` are used, so a backtest can never see a quarter before it was actually disclosed.
 - **Cross-Asset Correlation Filter** (`correlation_filter.py`) — detects sector clustering (e.g. 5 congressional trades in biotech in one week). Applies `1/sqrt(n)` conviction dampening for correlated clusters.
 - **Regime-Conditional Ensemble Weights** (`ensemble_scoring.py`) — maintains separate weight vectors per HMM state (bull/bear/sideways). Models that add noise in a given regime are automatically downweighted.
 - **XGBoost Safeguards** (`xgboost_classifier.py`) — minimum 200 samples for XGBoost (L1 logistic regression fallback for <200), permutation importance feature selection with random noise benchmark, nested temporal CV. Refuses to issue predictions if CV AUC ≤ 0.55.
@@ -332,7 +370,7 @@ This system implements institutional-grade statistical safeguards to eliminate f
 | Layer | Technology |
 |---|---|
 | **Backend** | Python 3.10+, FastAPI, SQLAlchemy, SQLite (PostgreSQL-ready) |
-| **Analysis** | NumPy, SciPy, arch (GARCH), hmmlearn (HMM), XGBoost, scikit-learn, statsmodels, yfinance |
+| **Analysis** | NumPy, SciPy, arch (GARCH), hmmlearn (HMM), XGBoost, scikit-learn, statsmodels, yfinance, vaderSentiment (FinBERT optional via transformers) |
 | **Data** | httpx (async HTTP), fredapi, pandas, pandas-datareader |
 | **Frontend** | React 18, TypeScript, Vite |
 | **Alerts** | Slack webhooks via httpx |
@@ -355,11 +393,21 @@ This system implements institutional-grade statistical safeguards to eliminate f
 - [x] Isotonic regression calibration (D5) — live score → P(win) mapping
 - [x] XGBoost overhaul: nested CV, permutation feature selection, sample-size guards
 - [x] Stock price history visualization — per-ticker SVG chart with time range selector and performance stats
+- [x] Full ML bias/error audit — 10 defects fixed ([docs/ML_MODEL_REVIEW.md](docs/ML_MODEL_REVIEW.md))
+- [x] Morning Top Pick — daily single-stock selection via Slack/API/dashboard
+- [x] Industry/sector categorization — `/api/sectors` + dashboard picker with click-to-filter
+- [x] News sentiment (Finnhub + GDELT + FinBERT/VADER) as ensemble component + XGBoost features
+- [x] SEC XBRL point-in-time fundamentals replacing yfinance `.info`
+- [x] 13F institutional holdings as a third signal source
+- [x] Weather overlay for weather-sensitive sectors (Open-Meteo + NWS)
+- [x] BLS + Treasury macro enrichment
 - [ ] Scheduled pipeline + historical backfill (cron + 6-12 month SEC EDGAR archives)
 - [ ] Network/graph analysis of insider co-trading patterns
 - [ ] NLP sentiment on 10-K/10-Q filings (Loughran-McDonald wordlists)
 - [ ] Paper trading mode with P&L tracking
 - [ ] Real-time streaming (WebSocket + SSE)
+
+Launch and deployment plans: [docs/PUBLIC_LAUNCH_ROADMAP.md](docs/PUBLIC_LAUNCH_ROADMAP.md) · [docs/DEPLOYMENT_ROADMAP.md](docs/DEPLOYMENT_ROADMAP.md)
 
 ---
 

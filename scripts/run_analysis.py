@@ -25,6 +25,10 @@ from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.ticker_analysis import analyze_ticker
 from src.analysis.sector_momentum import compute_sector_momentum, format_sector_report
 from src.analysis.position_sizing import compute_position_sizes, format_sizing_report
+from src.analysis.news_sentiment import NewsSentimentAnalyzer
+from src.analysis.weather_overlay import WeatherOverlay
+from src.clients.news import NewsClient
+from config.settings import Settings
 
 
 CANADIAN_BANKS = ["RY", "CM", "TD", "BNS"]
@@ -69,6 +73,9 @@ async def main():
     garch_model = GARCHForecaster()
     copula = CopulaTailRisk()
     ensemble = EnsembleScorer()
+    news_client = NewsClient(getattr(Settings(), "finnhub_api_key", None))
+    news_analyzer = NewsSentimentAnalyzer()
+    weather = WeatherOverlay()
 
     print("Loading Fama-French factors...")
     ff_factors = await ff_client.get_factors(days=504)
@@ -80,8 +87,10 @@ async def main():
         try:
             result = await asyncio.wait_for(
                 analyze_ticker(ticker, yahoo, ff_client, ff_factors,
-                               mc, hmm, garch_model, copula, ensemble),
-                timeout=120,
+                               mc, hmm, garch_model, copula, ensemble,
+                               news_client=news_client, news_analyzer=news_analyzer,
+                               weather=weather, sector=SECTOR_MAP.get(ticker)),
+                timeout=180,
             )
             if result:
                 # Inject sector for sector momentum

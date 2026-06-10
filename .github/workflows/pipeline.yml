@@ -14,7 +14,8 @@ permissions:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # News (GDELT throttled to 1 req/6s), XBRL, and 13F add network time
+    timeout-minutes: 25
 
     steps:
       - name: Checkout code
@@ -54,6 +55,8 @@ jobs:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
           DATABASE_URL: sqlite:///./smart_money.db
           CONVICTION_THRESHOLD: "0.6"
           PIPELINE_MODE: oneshot

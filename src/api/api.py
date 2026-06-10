@@ -326,6 +326,7 @@ def get_signals(
     days: int = Query(default=14, ge=1, le=365),
     source: str | None = Query(default=None),
     min_conviction: float | None = Query(default=None, ge=0, le=1),
+    sector: str | None = Query(default=None),
 ):
     session = app.state.session_factory()
     try:
@@ -345,6 +346,8 @@ def get_signals(
                 query = query.filter(SmartMoneyEvent.source_type == source_enum)
             except ValueError:
                 pass  # invalid source value, skip filter
+        if sector:
+            query = query.filter(Enrichment.sector == sector)
         query = query.order_by(desc(SmartMoneyEvent.trade_date))
 
         results = []
@@ -420,6 +423,125 @@ def get_signals_by_ticker(ticker: str):
                     price_at_signal=enr.price_at_signal if enr else None,
                 )
             )
+        return results
+    finally:
+        session.close()
+
+
+class TopPickResponse(BaseModel):
+    ticker: str
+    score: float
+    conviction: float | None = None
+    ensemble_score: float | None = None
+    ensemble_recommendation: str | None = None
+    mc_prob_profit_30d: float | None = None
+    n_signals: int
+    n_distinct_actors: int
+    sector: str | None = None
+    price_at_signal: float | None = None
+    latest_actor: str | None = None
+    latest_trade_date: str | None = None
+    source_type: str | None = None
+    runner_ups: list[dict] = []
+    lookback_days: int
+    selected_at: str
+
+
+@app.get("/api/top-pick", response_model=TopPickResponse | None)
+def get_top_pick(lookback_days: int = Query(default=7, ge=1, le=30)):
+    """The single stock most probable for high performance in the
+    following days, blended from conviction, ensemble, and Monte Carlo."""
+    from src.analysis.top_pick import select_top_pick
+
+    pick = select_top_pick(app.state.session_factory, lookback_days=lookback_days)
+    if pick is None:
+        return None
+    return TopPickResponse(**pick)
+
+
+class SectorSummaryResponse(BaseModel):
+    sector: str
+    n_signals: int
+    n_buys: int
+    n_sells: int
+    n_tickers: int
+    tickers: list[str]
+    avg_conviction: float | None = None
+    avg_ensemble_score: float | None = None
+    top_ticker: str | None = None
+    top_ticker_conviction: float | None = None
+    latest_signal_date: datetime | None = None
+
+
+@app.get("/api/sectors", response_model=list[SectorSummaryResponse])
+def get_sectors(days: int = Query(default=30, ge=1, le=365)):
+    """Industry/sector breakdown of recent smart-money activity, so a user
+    can pick one industry and see what happened there."""
+    import numpy as np
+    session = app.state.session_factory()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        rows = (
+            session.query(SmartMoneyEvent, ConvictionScore, Enrichment)
+            .outerjoin(ConvictionScore, SmartMoneyEvent.id == ConvictionScore.event_id)
+            .outerjoin(Enrichment, SmartMoneyEvent.id == Enrichment.event_id)
+            .filter(SmartMoneyEvent.trade_date >= cutoff)
+            .all()
+        )
+
+        # Latest ensemble score per event for sector averages
+        from sqlalchemy import func
+        subq = session.query(
+            EnsembleScoreResult.event_id,
+            func.max(EnsembleScoreResult.run_date).label("max_date"),
+        ).group_by(EnsembleScoreResult.event_id).subquery()
+        ens_rows = session.query(EnsembleScoreResult).join(
+            subq,
+            (EnsembleScoreResult.event_id == subq.c.event_id)
+            & (EnsembleScoreResult.run_date == subq.c.max_date),
+        ).all()
+        ens_by_event = {e.event_id: e for e in ens_rows}
+
+        sectors: dict[str, dict] = {}
+        for event, cs, enr in rows:
+            sector = (enr.sector if enr and enr.sector else "Unknown")
+            s = sectors.setdefault(sector, {
+                "n_signals": 0, "n_buys": 0, "n_sells": 0,
+                "tickers": set(), "convictions": [], "ensembles": [],
+                "best": None, "latest": None,
+            })
+            s["n_signals"] += 1
+            if event.direction.value == "buy":
+                s["n_buys"] += 1
+            else:
+                s["n_sells"] += 1
+            s["tickers"].add(event.ticker)
+            if cs and cs.conviction is not None:
+                s["convictions"].append(cs.conviction)
+                if s["best"] is None or cs.conviction > s["best"][1]:
+                    s["best"] = (event.ticker, cs.conviction)
+            ens = ens_by_event.get(event.id)
+            if ens:
+                s["ensembles"].append(ens.total_score)
+            if s["latest"] is None or event.trade_date > s["latest"]:
+                s["latest"] = event.trade_date
+
+        results = []
+        for sector, s in sectors.items():
+            results.append(SectorSummaryResponse(
+                sector=sector,
+                n_signals=s["n_signals"],
+                n_buys=s["n_buys"],
+                n_sells=s["n_sells"],
+                n_tickers=len(s["tickers"]),
+                tickers=sorted(s["tickers"]),
+                avg_conviction=round(float(np.mean(s["convictions"])), 4) if s["convictions"] else None,
+                avg_ensemble_score=round(float(np.mean(s["ensembles"])), 1) if s["ensembles"] else None,
+                top_ticker=s["best"][0] if s["best"] else None,
+                top_ticker_conviction=round(s["best"][1], 4) if s["best"] else None,
+                latest_signal_date=s["latest"],
+            ))
+        results.sort(key=lambda r: -r.n_signals)
         return results
     finally:
         session.close()
@@ -740,6 +862,80 @@ def get_extended_macro():
         session.close()
 
 
+class MacroExtraResponse(BaseModel):
+    snapshot_date: datetime
+    payrolls_yoy_pct: float | None = None
+    unemployment_rate: float | None = None
+    treasury_avg_rate: float | None = None
+    total_public_debt: float | None = None
+
+
+@app.get("/api/macro/extra", response_model=MacroExtraResponse | None)
+def get_macro_extra():
+    """Latest BLS labor + Treasury fiscal snapshot (enriches the FRED layer)."""
+    from src.models.database import MacroExtraData
+    session = app.state.session_factory()
+    try:
+        row = session.query(MacroExtraData).order_by(
+            desc(MacroExtraData.snapshot_date)
+        ).first()
+        if not row:
+            return None
+        return MacroExtraResponse(
+            snapshot_date=row.snapshot_date,
+            payrolls_yoy_pct=row.payrolls_yoy_pct,
+            unemployment_rate=row.unemployment_rate,
+            treasury_avg_rate=row.treasury_avg_rate,
+            total_public_debt=row.total_public_debt,
+        )
+    finally:
+        session.close()
+
+
+class NewsSentimentResponse(BaseModel):
+    ticker: str
+    run_date: datetime
+    as_of: datetime
+    n_articles: int | None = None
+    n_articles_3d: int | None = None
+    news_volume_z: float | None = None
+    news_sentiment_mean: float | None = None
+    news_sentiment_trend_3d: float | None = None
+    sentiment_model: str | None = None
+    articles: list[dict] = []
+
+
+@app.get("/api/news/{ticker}", response_model=NewsSentimentResponse | None)
+def get_news_sentiment(ticker: str):
+    """Latest persisted news-sentiment features for a ticker."""
+    import json as _json
+    from src.models.database import NewsSentimentResult
+    session = app.state.session_factory()
+    try:
+        row = session.query(NewsSentimentResult).filter(
+            NewsSentimentResult.ticker == ticker.upper()
+        ).order_by(desc(NewsSentimentResult.run_date)).first()
+        if not row:
+            return None
+        articles = []
+        if row.articles_json:
+            try:
+                articles = _json.loads(row.articles_json)
+            except Exception:
+                pass
+        return NewsSentimentResponse(
+            ticker=row.ticker, run_date=row.run_date, as_of=row.as_of,
+            n_articles=row.n_articles, n_articles_3d=row.n_articles_3d,
+            news_volume_z=row.news_volume_z,
+            news_sentiment_mean=row.news_sentiment_mean,
+            news_sentiment_trend_3d=row.news_sentiment_trend_3d,
+            sentiment_model=row.sentiment_model,
+            articles=articles[:25],
+        )
+    finally:
+        session.close()
+
+
 @app.get("/api/analysis/event-study/summary", response_model=EventStudyAggregateResponse)
 def get_event_study_summary():
     """Aggregate event study statistics across all events."""
@@ -976,7 +1172,7 @@ def export_signals(
     import csv
     import io
 
-    signals = get_signals(days=days, source=None, min_conviction=None)
+    signals = get_signals(days=days, source=None, min_conviction=None, sector=None)
 
     if format == "json":
         import json
@@ -1143,7 +1339,7 @@ async def _run_pipeline(orchestrator: Orchestrator):
 
 @app.get("/api/dashboard", response_model=DashboardResponse)
 def get_dashboard():
-    signals = get_signals(days=14, source=None, min_conviction=None)
+    signals = get_signals(days=14, source=None, min_conviction=None, sector=None)
     macro = get_macro()
     ext_macro = get_extended_macro()
     return DashboardResponse(

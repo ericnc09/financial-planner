@@ -36,14 +36,11 @@ def benjamini_hochberg(p_values: list[float], alpha: float = 0.05) -> list[bool]
 
 class EnsembleScorer:
     """
-    Weights:
-        monte_carlo  : 0.20  (probability + expected return)
-        hmm_regime   : 0.15  (regime alignment with direction)
-        garch        : 0.10  (volatility environment)
-        fama_french  : 0.10  (alpha + factor alignment)
-        copula_tail  : 0.15  (tail risk penalty)
-        bayesian_decay: 0.15 (signal still active?)
-        event_study  : 0.15  (historical CAR for this pattern)
+    Combines up to 11 model components (see DEFAULT_WEIGHTS for the
+    authoritative weights): Monte Carlo, HMM regime, GARCH, Fama-French,
+    copula tail risk, Bayesian decay, event study, options flow, earnings
+    overlay, news sentiment, and weather overlay (weather only contributes
+    for weather-sensitive sectors).
     """
 
     # Minimum number of models that must independently score >= 50 (neutral)
@@ -53,15 +50,17 @@ class EnsembleScorer:
     MIN_AGREEING_MODELS = 4
 
     DEFAULT_WEIGHTS = {
-        "monte_carlo": 0.160,
-        "hmm_regime": 0.120,
-        "garch": 0.085,
-        "fama_french": 0.085,
-        "copula_tail": 0.115,
-        "bayesian_decay": 0.115,
-        "event_study": 0.115,
-        "options_flow": 0.105,
-        "earnings_overlay": 0.100,
+        "monte_carlo": 0.140,
+        "hmm_regime": 0.105,
+        "garch": 0.075,
+        "fama_french": 0.075,
+        "copula_tail": 0.100,
+        "bayesian_decay": 0.100,
+        "event_study": 0.100,
+        "options_flow": 0.090,
+        "earnings_overlay": 0.085,
+        "news_sentiment": 0.085,
+        "weather_overlay": 0.045,
     }
 
     def __init__(self, calibrated_weights: dict[str, float] | None = None):
@@ -84,6 +83,8 @@ class EnsembleScorer:
         event_study: dict | None = None,
         options_flow: dict | None = None,
         earnings_overlay: dict | None = None,
+        news_sentiment: dict | None = None,
+        weather_overlay: dict | None = None,
     ) -> dict:
         """
         Compute ensemble score 0-100 from all available model outputs.
@@ -151,6 +152,20 @@ class EnsembleScorer:
             eo_score = earnings_overlay.get("score", 50)
             components["earnings_overlay"] = float(eo_score)
             available_weight += self.WEIGHTS["earnings_overlay"]
+
+        # --- News Sentiment (0-100) ---
+        if news_sentiment:
+            from src.analysis.news_sentiment import NewsSentimentAnalyzer
+            ns_score = NewsSentimentAnalyzer.score_for_ensemble(news_sentiment, direction)
+            components["news_sentiment"] = ns_score
+            available_weight += self.WEIGHTS["news_sentiment"]
+
+        # --- Weather Overlay (0-100, only for weather-sensitive sectors) ---
+        if weather_overlay:
+            wo_score = weather_overlay.get("score")
+            if wo_score is not None:
+                components["weather_overlay"] = float(wo_score)
+                available_weight += self.WEIGHTS["weather_overlay"]
 
         # Weighted average (re-normalize if some models missing)
         if available_weight == 0:
@@ -565,12 +580,20 @@ class WalkForwardCalibrator:
         if scores_matrix.shape[0] < n_models:
             return dict(EnsembleScorer.DEFAULT_WEIGHTS)
 
+        # Spearman of the weighted score is piecewise-constant in w (ranks only
+        # change at crossings), so gradient-based SLSQP sees a zero gradient and
+        # returns the starting weights unchanged. Instead maximize the Pearson
+        # correlation between the continuous weighted score and the FIXED ranks
+        # of realized returns — smooth in w, same rank-based target.
+        from scipy.stats import rankdata
+        return_ranks = rankdata(returns_arr)
+
         def neg_corr(w):
             w = w / w.sum()  # normalize
             ensemble = scores_matrix @ w
-            # Rank correlation (Spearman)
-            from scipy.stats import spearmanr
-            corr, _ = spearmanr(ensemble, returns_arr)
+            if np.std(ensemble) < 1e-12:
+                return 0.0
+            corr = np.corrcoef(ensemble, return_ranks)[0, 1]
             return -corr if not np.isnan(corr) else 0.0
 
         w0 = np.array([EnsembleScorer.DEFAULT_WEIGHTS[n] for n in self.MODEL_NAMES])

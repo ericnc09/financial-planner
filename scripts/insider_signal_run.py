@@ -29,6 +29,8 @@ from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.copula_tail_risk import CopulaTailRisk
 from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.ticker_analysis import analyze_ticker
+from src.analysis.news_sentiment import NewsSentimentAnalyzer
+from src.clients.news import NewsClient
 from src.slack_bot.formatter import format_results
 from config.settings import Settings
 
@@ -131,6 +133,8 @@ async def run():
     garch = GARCHForecaster()
     copula = CopulaTailRisk()
     ensemble = EnsembleScorer()
+    news_client = NewsClient(getattr(settings, "finnhub_api_key", None))
+    news_analyzer = NewsSentimentAnalyzer()
 
     ff_factors = await ff_client.get_factors(days=504)
     print(f"  Fama-French factors: {'OK' if ff_factors is not None else 'FAILED'}\n")
@@ -146,8 +150,9 @@ async def run():
         try:
             result = await asyncio.wait_for(
                 analyze_ticker(ticker, yahoo, ff_client, ff_factors,
-                               mc, hmm, garch, copula, ensemble),
-                timeout=120,
+                               mc, hmm, garch, copula, ensemble,
+                               news_client=news_client, news_analyzer=news_analyzer),
+                timeout=180,
             )
             if result:
                 result["_trade_signals"] = signals  # attach signal context
@@ -192,7 +197,7 @@ async def run():
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')} ET\n"
                 f"_{len(all_events)} trades across {len(unique_tickers)} tickers "
                 f"(past {args.days}d)  •  "
-                f"7-model ensemble: MC · HMM · GARCH · FF · Copula · Earnings · Decay_"
+                f"ensemble: MC · HMM · GARCH · FF · Copula · Earnings · Decay · News_"
             ),
         },
     }

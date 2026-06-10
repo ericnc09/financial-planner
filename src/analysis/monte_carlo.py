@@ -88,7 +88,11 @@ class MonteCarloSimulator:
         z = self.rng.standard_t(df=df, size=(self.n_simulations, max_horizon))
         # Scale to unit variance: Var(t_df) = df/(df-2), so divide by sqrt(df/(df-2))
         z = z / np.sqrt(df / (df - 2))
-        daily_returns = (mu - 0.5 * sigma**2) + sigma * z
+        # mu is the mean of LOG returns, which already equals the GBM drift
+        # minus the variance correction (mu_gbm - 0.5*sigma^2). Subtracting
+        # 0.5*sigma^2 again would double-count the variance drag and bias
+        # every simulated path downward by ~sigma^2/2 per day.
+        daily_returns = mu + sigma * z
         cum_returns = np.cumsum(daily_returns, axis=1)
         price_paths = current_price * np.exp(cum_returns)
 

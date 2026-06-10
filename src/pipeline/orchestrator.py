@@ -15,11 +15,17 @@ from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.hmm_regime import HMMRegimeDetector
 from src.analysis.mean_variance import MeanVarianceOptimizer
 from src.analysis.monte_carlo import MonteCarloSimulator
+from src.analysis.news_sentiment import NewsSentimentAnalyzer
+from src.analysis.weather_overlay import WeatherOverlay
 from src.clients.congress import CongressClient
 from src.clients.options import OptionsClient
 from src.clients.edgar import EdgarClient
+from src.clients.edgar_13f import Edgar13FClient
+from src.clients.edgar_xbrl import EdgarXbrlClient
 from src.clients.fama_french import FamaFrenchClient
 from src.clients.fred import FredClient
+from src.clients.macro_extra import MacroExtraClient
+from src.clients.news import NewsClient
 from src.clients.tiingo import TiingoClient
 from src.clients.yahoo import YahooClient
 from src.models.database import (
@@ -31,7 +37,9 @@ from src.models.database import (
     EnsembleScoreResult,
     EventStudyResult,
     ExtendedMacroData,
+    MacroExtraData,
     MeanVarianceResult,
+    NewsSentimentResult,
     OptionsFlow,
     FamaFrenchExposure,
     GARCHForecast,
@@ -74,6 +82,12 @@ class Orchestrator:
         self.ensemble: EnsembleScorer | None = None
         self.options_client: OptionsClient | None = None
         self.earnings_overlay: EarningsOverlay | None = None
+        self.news_client: NewsClient | None = None
+        self.news_analyzer: NewsSentimentAnalyzer | None = None
+        self.weather: WeatherOverlay | None = None
+        self.edgar_xbrl: EdgarXbrlClient | None = None
+        self.edgar_13f: Edgar13FClient | None = None
+        self.macro_extra: MacroExtraClient | None = None
         self.notifier: SlackNotifier | None = None
         self.engine = None
         self.session_factory = None
@@ -105,6 +119,12 @@ class Orchestrator:
         self.ensemble = EnsembleScorer()
         self.options_client = OptionsClient()
         self.earnings_overlay = EarningsOverlay()
+        self.news_client = NewsClient(getattr(self.settings, "finnhub_api_key", None))
+        self.news_analyzer = NewsSentimentAnalyzer()
+        self.weather = WeatherOverlay()
+        self.edgar_xbrl = EdgarXbrlClient()
+        self.edgar_13f = Edgar13FClient()
+        self.macro_extra = MacroExtraClient(getattr(self.settings, "bls_api_key", None))
 
         # Alerts
         self.notifier = SlackNotifier(self.settings.slack_webhook_url)
@@ -122,12 +142,19 @@ class Orchestrator:
     async def run_cycle(self):
         logger.info("orchestrator.cycle_start")
 
-        # --- Step 1: INGEST (SEC EDGAR + House/Senate Stock Watcher) ---
+        # --- Step 1: INGEST (SEC EDGAR + House/Senate Stock Watcher + 13F) ---
         insider_signals = await self.edgar.get_bulk_insider_trades(since_days=14)
         congressional_signals = await self.congress.get_all_congressional_trades(
             since_days=14
         )
-        signals = insider_signals + congressional_signals
+        # 13F institutional holdings diffs (quarterly cadence; the events
+        # dedup against the unique constraint on re-runs)
+        institutional_signals = []
+        try:
+            institutional_signals = await self.edgar_13f.get_recent_13f_events()
+        except Exception as e:
+            logger.warning("orchestrator.13f_failed", error=str(e))
+        signals = insider_signals + congressional_signals + institutional_signals
         signals.sort(key=lambda e: e.trade_date, reverse=True)
         new_events = self._persist_events(signals)
         logger.info(
@@ -136,6 +163,8 @@ class Orchestrator:
 
         if not new_events:
             logger.info("orchestrator.no_new_events")
+            # Still produce the morning top pick from recent signals in the DB
+            await self._send_morning_top_pick()
             return
 
         # --- Step 2: ENRICH ---
@@ -153,6 +182,13 @@ class Orchestrator:
             logger.info("orchestrator.extended_macro_saved", data=extended_macro)
         except Exception as e:
             logger.warning("orchestrator.extended_macro_failed", error=str(e))
+
+        # --- Step 3b2: BLS + TREASURY MACRO (enriches the FRED layer) ---
+        try:
+            macro_extra = await self.macro_extra.get_snapshot()
+            self._persist_macro_extra(macro_extra)
+        except Exception as e:
+            logger.warning("orchestrator.macro_extra_failed", error=str(e))
 
         # --- Step 3c: ANALYSIS MODELS (Monte Carlo, HMM, GARCH, Fama-French) ---
         unique_tickers = list({schema.ticker for _, schema in new_events})
@@ -213,7 +249,30 @@ class Orchestrator:
                     price=enrichment.price_at_signal,
                 )
 
+        # --- Step 5: MORNING TOP PICK ---
+        await self._send_morning_top_pick()
+
         logger.info("orchestrator.cycle_complete")
+
+    async def _send_morning_top_pick(self):
+        """Select and announce the single most promising stock for the
+        following days, blending conviction, ensemble, and Monte Carlo."""
+        try:
+            from src.analysis.top_pick import select_top_pick
+
+            pick = select_top_pick(self.session_factory, lookback_days=7)
+            if pick is None:
+                logger.info("orchestrator.top_pick_none")
+                return
+            logger.info(
+                "orchestrator.top_pick",
+                ticker=pick["ticker"], score=pick["score"],
+                sector=pick.get("sector"),
+            )
+            if self.notifier:
+                await self.notifier.send_top_pick(pick)
+        except Exception as e:
+            logger.warning("orchestrator.top_pick_failed", error=str(e))
 
     def _persist_events(self, signals):
         session = self.session_factory()
@@ -260,6 +319,10 @@ class Orchestrator:
                 if enrichment is None:
                     # Fallback to Tiingo if yfinance fails
                     enrichment = await self.tiingo.enrich_ticker(ticker)
+                # Overlay SEC XBRL fundamentals — point-in-time correct and
+                # far more reliable than yfinance .info scraping
+                if enrichment is not None:
+                    enrichment = await self._overlay_xbrl_fundamentals(ticker, enrichment)
                 ticker_cache[ticker] = enrichment
                 logger.info("orchestrator.enriched_ticker", ticker=ticker)
             except Exception as e:
@@ -276,6 +339,79 @@ class Orchestrator:
                 results.append((event_id, event_schema, enrichment))
 
         return results
+
+    async def _overlay_xbrl_fundamentals(self, ticker: str, enrichment):
+        """Replace yfinance fundamental fields with SEC XBRL values when
+        available. Price-derived fields (momentum, RSI, etc.) stay yfinance."""
+        try:
+            xbrl = await self.edgar_xbrl.get_fundamentals(ticker)
+            if not xbrl:
+                return enrichment
+            update = {}
+            if xbrl.get("eps_latest") is not None:
+                update["eps_latest"] = xbrl["eps_latest"]
+            if xbrl.get("eps_growth_yoy") is not None:
+                update["eps_growth_yoy"] = xbrl["eps_growth_yoy"]
+            if xbrl.get("revenue_growth_yoy") is not None:
+                update["revenue_growth_yoy"] = xbrl["revenue_growth_yoy"]
+            # Recompute trailing P/E from price and XBRL TTM EPS
+            eps_ttm = xbrl.get("eps_ttm")
+            if eps_ttm and eps_ttm > 0 and enrichment.price_at_signal:
+                update["pe_ratio"] = round(enrichment.price_at_signal / eps_ttm, 2)
+            if update:
+                enrichment = enrichment.model_copy(update=update)
+                logger.info("orchestrator.xbrl_overlay", ticker=ticker,
+                            fields=sorted(update.keys()))
+            return enrichment
+        except Exception as e:
+            logger.debug("orchestrator.xbrl_overlay_failed", ticker=ticker, error=str(e))
+            return enrichment
+
+    def _persist_macro_extra(self, snapshot: dict):
+        import json
+        session = self.session_factory()
+        try:
+            row = MacroExtraData(
+                snapshot_date=datetime.utcnow(),
+                payrolls_yoy_pct=snapshot.get("payrolls_yoy_pct"),
+                unemployment_rate=snapshot.get("unemployment_rate"),
+                treasury_avg_rate=snapshot.get("treasury_avg_rate"),
+                total_public_debt=snapshot.get("total_public_debt"),
+                detail_json=json.dumps(snapshot.get("detail") or {}),
+            )
+            session.add(row)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    def _persist_news_sentiment(self, ticker: str, run_date: datetime, result: dict):
+        import json
+        session = self.session_factory()
+        try:
+            row = NewsSentimentResult(
+                ticker=ticker,
+                run_date=run_date,
+                as_of=datetime.fromisoformat(result["as_of"]),
+                n_articles=result.get("n_articles"),
+                n_articles_3d=result.get("n_articles_3d"),
+                news_volume_z=result.get("news_volume_z"),
+                news_sentiment_mean=result.get("news_sentiment_mean"),
+                news_sentiment_trend_3d=result.get("news_sentiment_trend_3d"),
+                sentiment_model=result.get("sentiment_model"),
+                earliest_article_at=datetime.fromisoformat(result["earliest_article_at"])
+                if result.get("earliest_article_at") else None,
+                latest_article_at=datetime.fromisoformat(result["latest_article_at"])
+                if result.get("latest_article_at") else None,
+                articles_json=json.dumps(result.get("articles") or []),
+            )
+            session.add(row)
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
 
     def _persist_enrichment(self, event_id, enrichment_schema):
         session = self.session_factory()
@@ -386,10 +522,13 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning("orchestrator.garch_failed", ticker=ticker, error=str(e))
 
-                # Fama-French Factor Exposure
+                # Fama-French Factor Exposure (date-joined to FF factor rows)
                 try:
                     if ff_factors is not None:
-                        ff_result = self.fama_french.compute_factor_exposure(returns, ff_factors)
+                        return_dates = price_data["dates"][1:] if price_data.get("dates") else None
+                        ff_result = self.fama_french.compute_factor_exposure(
+                            returns, ff_factors, stock_dates=return_dates
+                        )
                         if ff_result:
                             self._persist_fama_french(ticker, run_date, ff_result)
                 except Exception as e:
@@ -550,12 +689,25 @@ class Orchestrator:
 
                 price_dates = price_data["dates"]
                 price_returns = price_data["returns"]
+                return_dates = price_dates[1:] if price_dates else None
 
-                # Align market returns to the same length
-                n = min(len(price_returns), len(market_returns))
-                aligned_market = market_returns[-n:]
-                aligned_stock = price_returns[-n:]
-                aligned_dates = price_dates[-(n + 1):]  # dates are 1 longer than returns
+                # Date-join stock returns to market (Mkt-RF) returns. FF data
+                # lags by weeks, so tail-aligning the arrays would shift every
+                # observation in the market-model regression by that lag.
+                aligned = self.fama_french.align_stock_to_factors(
+                    price_returns, return_dates, ff_factors
+                )
+                if aligned is not None:
+                    aligned_stock, factor_rows, common_dates = aligned
+                    aligned_market = factor_rows["Mkt-RF"].values
+                    # analyze_event maps return index i to price_dates[i+1],
+                    # so prepend one placeholder date to keep that mapping.
+                    aligned_dates = [common_dates[0]] + list(common_dates)
+                else:
+                    n = min(len(price_returns), len(market_returns))
+                    aligned_market = market_returns[-n:]
+                    aligned_stock = price_returns[-n:]
+                    aligned_dates = price_dates[-(n + 1):]  # dates are 1 longer than returns
 
                 result = self.event_study.analyze_event(
                     ticker=ticker,
@@ -639,8 +791,19 @@ class Orchestrator:
                 price_data = await self.yahoo.get_price_history(ticker, days=504)
                 if price_data is None:
                     continue
-                n = min(len(price_data["returns"]), len(market_returns))
-                result = self.copula.analyze(price_data["returns"][-n:], market_returns[-n:])
+                returns = price_data["returns"]
+                return_dates = price_data["dates"][1:] if price_data.get("dates") else None
+                aligned = self.fama_french.align_stock_to_factors(
+                    returns, return_dates, ff_factors
+                )
+                if aligned is not None:
+                    stock_aligned, factor_rows, _ = aligned
+                    result = self.copula.analyze(
+                        stock_aligned, factor_rows["Mkt-RF"].values
+                    )
+                else:
+                    n = min(len(returns), len(market_returns))
+                    result = self.copula.analyze(returns[-n:], market_returns[-n:])
                 if result:
                     self._persist_copula(ticker, run_date, result)
             except Exception as e:
@@ -785,9 +948,32 @@ class Orchestrator:
         logger.info("orchestrator.ensemble_start", events=len(new_events))
         run_date = datetime.utcnow()
 
+        # Weather context: one national fetch per cycle
+        weather_ctx = None
+        try:
+            weather_ctx = await self.weather.get_context()
+        except Exception as e:
+            logger.debug("orchestrator.weather_ctx_failed", error=str(e))
+
+        # News sentiment: fetch once per unique ticker, persist, reuse
+        news_cache: dict[str, dict | None] = {}
+
         for event_id, event_schema in new_events:
             try:
                 ticker = event_schema.ticker
+
+                if ticker not in news_cache:
+                    news_result = None
+                    try:
+                        articles = await self.news_client.get_company_news(ticker, days=14)
+                        news_result = self.news_analyzer.analyze(ticker, articles)
+                        if news_result:
+                            self._persist_news_sentiment(ticker, run_date, news_result)
+                    except Exception as e:
+                        logger.debug("orchestrator.news_failed", ticker=ticker, error=str(e))
+                    news_cache[ticker] = news_result
+                news_result = news_cache[ticker]
+
                 session = self.session_factory()
                 try:
                     # Gather latest model results for this ticker
@@ -819,8 +1005,23 @@ class Orchestrator:
                     es_row = session.query(EventStudyResult).filter(
                         EventStudyResult.event_id == event_id
                     ).order_by(desc(EventStudyResult.run_date)).first()
+
+                    opts_row = session.query(OptionsFlow).filter(
+                        OptionsFlow.ticker == ticker
+                    ).order_by(OptionsFlow.analysis_date.desc()).first()
+
+                    enr_row = session.query(Enrichment).filter(
+                        Enrichment.event_id == event_id
+                    ).first()
                 finally:
                     session.close()
+
+                # Weather overlay: only contributes for weather-sensitive sectors
+                weather_dict = None
+                if weather_ctx and enr_row and enr_row.sector:
+                    weather_dict = WeatherOverlay.score(
+                        enr_row.sector, event_schema.direction.value, weather_ctx
+                    )
 
                 # Convert DB rows to dicts for ensemble scorer
                 mc_dict = {"horizons": {30: {
@@ -846,10 +1047,6 @@ class Orchestrator:
                 es_dict = {"car_5d": es_row.car_5d, "car_20d": es_row.car_20d,
                            "is_significant": es_row.is_significant} if es_row else None
 
-                # Options flow
-                opts_row = session.query(OptionsFlow).filter(
-                    OptionsFlow.ticker == ticker
-                ).order_by(OptionsFlow.analysis_date.desc()).first()
                 opts_dict = {
                     "pcr": opts_row.pcr,
                     "iv_skew": opts_row.iv_skew,
@@ -877,6 +1074,8 @@ class Orchestrator:
                     event_study=es_dict,
                     options_flow=opts_dict,
                     earnings_overlay=earnings_dict,
+                    news_sentiment=news_result,
+                    weather_overlay=weather_dict,
                 )
 
                 self._persist_ensemble(ticker, event_id, run_date, result)
@@ -981,6 +1180,14 @@ class Orchestrator:
             await self.yahoo.close()
         if self.fama_french:
             await self.fama_french.close()
+        if self.news_client:
+            await self.news_client.close()
+        if self.edgar_xbrl:
+            await self.edgar_xbrl.close()
+        if self.edgar_13f:
+            await self.edgar_13f.close()
+        if self.macro_extra:
+            await self.macro_extra.close()
         if self.notifier:
             await self.notifier.close()
 

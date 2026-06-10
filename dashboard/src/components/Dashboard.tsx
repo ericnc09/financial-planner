@@ -8,6 +8,8 @@ import { MeanVarianceChart } from './MeanVarianceChart';
 import { PerformancePanel } from './PerformancePanel';
 import { BacktestPanel } from './BacktestPanel';
 import { StockPriceChart } from './StockPriceChart';
+import { TopPickCard } from './TopPickCard';
+import { SectorPanel } from './SectorPanel';
 
 class SafeCard extends Component<{ children: React.ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -37,11 +39,15 @@ const StatCard: React.FC<{ label: string; value: string; color?: string }> = ({ 
 export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loading }) => {
   const { signals, macro, extended_macro } = data;
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [sectorFilter, setSectorFilter] = useState<string | null>(null);
 
+  const visibleSignals = sectorFilter
+    ? signals.filter(s => (s.sector || 'Unknown') === sectorFilter)
+    : signals;
   const uniqueTickers = [...new Set(signals.map(s => s.ticker))].sort();
-  const passingSignals = signals.filter(s => s.passes_threshold).length;
-  const buySignals = signals.filter(s => s.direction === 'buy').length;
-  const sellSignals = signals.filter(s => s.direction === 'sell').length;
+  const passingSignals = visibleSignals.filter(s => s.passes_threshold).length;
+  const buySignals = visibleSignals.filter(s => s.direction === 'buy').length;
+  const sellSignals = visibleSignals.filter(s => s.direction === 'sell').length;
   const regime = macro?.regime || 'unknown';
 
   return (
@@ -70,9 +76,12 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
         </div>
       </div>
 
+      {/* Morning Top Pick */}
+      <SafeCard><TopPickCard onTickerClick={setSelectedTicker} /></SafeCard>
+
       {/* Stats Row */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-        <StatCard label="Total Signals" value={String(signals.length)} />
+        <StatCard label={sectorFilter ? `Signals (${sectorFilter})` : 'Total Signals'} value={String(visibleSignals.length)} />
         <StatCard label="High Conviction" value={String(passingSignals)} color="#22c55e" />
         <StatCard label="Buy Signals" value={String(buySignals)} color="#22c55e" />
         <StatCard label="Sell Signals" value={String(sellSignals)} color="#ef4444" />
@@ -107,9 +116,18 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
         <TickerDetail ticker={selectedTicker} onClose={() => setSelectedTicker(null)} />
       )}
 
+      {/* Industry / Sector Breakdown */}
+      <SafeCard>
+        <SectorPanel
+          selectedSector={sectorFilter}
+          onSelectSector={setSectorFilter}
+          onTickerClick={setSelectedTicker}
+        />
+      </SafeCard>
+
       {/* Signals Table */}
       <div style={{ marginBottom: 20 }}>
-        <SignalTable signals={signals} onTickerClick={setSelectedTicker} />
+        <SignalTable signals={visibleSignals} onTickerClick={setSelectedTicker} />
       </div>
     </div>
   );

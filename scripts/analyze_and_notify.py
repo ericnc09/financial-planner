@@ -93,7 +93,7 @@ async def run_and_notify(tickers: list[str]):
             "text": (
                 f":robot_face: *Smart Money Analysis* — "
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')} ET\n"
-                f"_5-model ensemble: Monte Carlo · HMM Regime · GARCH · Fama-French · Copula Tail Risk_"
+                f"_ensemble: Monte Carlo · HMM Regime · GARCH · Fama-French · Copula Tail Risk_"
             ),
         },
     }

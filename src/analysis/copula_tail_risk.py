@@ -127,13 +127,20 @@ class CopulaTailRisk:
             n = len(t1)
             # Bivariate t-copula log-likelihood:
             # log c = log f_joint(t1,t2) - log f_marg(t1) - log f_marg(t2)
+            # The gamma-function normalizing constants depend on nu (the
+            # optimization variable), so they cannot be dropped — omitting
+            # them biases the fitted degrees of freedom.
+            from scipy.special import gammaln
+            log_const = n * (
+                gammaln((nu + 2) / 2) + gammaln(nu / 2) - 2 * gammaln((nu + 1) / 2)
+            )
             log_joint = (
                 n * (-0.5 * np.log(det))
                 + (-(nu + 2) / 2) * np.sum(np.log(1 + quad / nu))
             )
             log_marg1 = (-(nu + 1) / 2) * np.sum(np.log(1 + t1 ** 2 / nu))
             log_marg2 = (-(nu + 1) / 2) * np.sum(np.log(1 + t2 ** 2 / nu))
-            ll = log_joint - log_marg1 - log_marg2
+            ll = log_const + log_joint - log_marg1 - log_marg2
             return -ll
 
         try:

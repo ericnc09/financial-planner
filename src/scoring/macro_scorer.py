@@ -12,30 +12,23 @@ class MacroScorer:
         self, snapshot: MacroSnapshotSchema, direction: Direction
     ) -> tuple[MacroRegime, float]:
         regime = snapshot.regime or MacroRegime.TRANSITION
-        regime_score = snapshot.regime_score if snapshot.regime_score is not None else 0.5
 
-        # Direction-aware modifier
-        if regime == MacroRegime.EXPANSION:
+        if snapshot.regime_score is not None:
+            # Continuous scaling when regime_score is available
+            # regime_score 0=expansion, 1=recession
+            regime_score = snapshot.regime_score
             if direction == Direction.BUY:
-                modifier = 1.2  # expansion favors buys
+                # Scale from 1.2 (expansion) to 0.7 (recession)
+                modifier = 1.2 - (regime_score * 0.5)
             else:
-                modifier = 0.8  # expansion dampens sells
+                # Scale from 0.8 (expansion) to 1.3 (recession)
+                modifier = 0.8 + (regime_score * 0.5)
+        elif regime == MacroRegime.EXPANSION:
+            modifier = 1.2 if direction == Direction.BUY else 0.8
         elif regime == MacroRegime.RECESSION:
-            if direction == Direction.BUY:
-                modifier = 0.7  # recession dampens buys
-            else:
-                modifier = 1.3  # recession favors sells
+            modifier = 0.7 if direction == Direction.BUY else 1.3
         else:  # TRANSITION
             modifier = 1.0
-
-        # Fine-tune with regime_score for gradual transitions
-        # regime_score 0=expansion, 1=recession
-        if direction == Direction.BUY:
-            # Scale from 1.2 (expansion) to 0.7 (recession)
-            modifier = 1.2 - (regime_score * 0.5)
-        else:
-            # Scale from 0.8 (expansion) to 1.3 (recession)
-            modifier = 0.8 + (regime_score * 0.5)
 
         modifier = round(max(0.5, min(1.5, modifier)), 3)
 

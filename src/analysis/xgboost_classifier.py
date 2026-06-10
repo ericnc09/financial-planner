@@ -48,6 +48,10 @@ FEATURE_COLS = [
     "garch_current_vol",    # annualised current conditional vol
     "ff_alpha",             # Fama-French annual alpha
     "copula_tail_score",    # tail risk 0-100
+    # News sentiment (bias-guarded: only articles published <= signal time)
+    "news_volume_z",        # attention vs trailing baseline
+    "news_sentiment_mean",  # mean headline sentiment [-1, 1]
+    "news_sentiment_trend_3d",  # last 3d vs rest of window
     # Conviction pipeline features (pipeline mode only; 0 when unknown)
     "signal_score",
     "fundamental_score",
@@ -419,6 +423,14 @@ class XGBoostSignalClassifier:
     # ── Dataset builder ───────────────────────────────────────────────────
 
     def _build_dataset(self, records: list[dict]):
+        # TimeSeriesSplit assumes chronological order — sort by whatever date
+        # field is present so the temporal CV folds don't leak future data.
+        records = sorted(
+            records,
+            key=lambda r: str(
+                r.get("date") or r.get("trade_date") or r.get("signal_date") or ""
+            ),
+        )
         rows = []
         labels = []
         for r in records:

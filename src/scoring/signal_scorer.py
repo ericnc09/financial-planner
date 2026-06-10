@@ -46,10 +46,14 @@ class SignalScorer:
     def _actor_reputation(self, actor: str, source_type: SourceType) -> float:
         """
         Base score by source type. Congressional gets a slight edge
-        (informational advantage is the thesis). C-suite insiders
-        (CEO, CFO, COO) get a boost. Default 0.5 for unknowns.
+        (informational advantage is the thesis); institutional 13F filers
+        are a curated list of elite funds, so they start at 0.6 too.
+        C-suite insiders (CEO, CFO, COO) get a boost. Default 0.5 for unknowns.
         """
-        base = 0.6 if source_type == SourceType.CONGRESSIONAL else 0.5
+        if source_type in (SourceType.CONGRESSIONAL, SourceType.INSTITUTIONAL):
+            base = 0.6
+        else:
+            base = 0.5
         actor_lower = actor.lower()
         # Boost for high-ranking insiders
         if any(

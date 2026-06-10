@@ -24,6 +24,7 @@ ADVERSARIAL_FEATURES = [
     "rsi_14d", "drawdown_from_52w_high", "avg_volume_30d",
     "hmm_bull_prob", "hmm_bear_prob", "garch_current_vol",
     "ff_alpha", "copula_tail_score",
+    "news_volume_z", "news_sentiment_mean", "news_sentiment_trend_3d",
 ]
 
 

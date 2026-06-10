@@ -222,7 +222,12 @@ class GrangerCausalityAnalyzer:
                 min_p = p_value
                 best_lag = lag
 
-        is_significant = min_p < self.significance
+        # Taking the minimum p-value over max_lag tests is a multiple-comparisons
+        # problem: with 20 lags, P(min p < 0.05 | no causality) ≈ 64%. Bonferroni-
+        # correct the minimum before declaring significance.
+        n_lags_tested = len(lag_results)
+        min_p_corrected = min(1.0, min_p * n_lags_tested) if n_lags_tested else 1.0
+        is_significant = min_p_corrected < self.significance
 
         return {
             "ticker": ticker,
@@ -230,7 +235,9 @@ class GrangerCausalityAnalyzer:
             "n_observations": len(data),
             "n_events": int(sig_arr.sum()),
             "best_lag": best_lag,
-            "min_p_value": round(min_p, 4),
+            "min_p_value": round(min_p_corrected, 4),
+            "min_p_value_uncorrected": round(min_p, 4),
+            "n_lags_tested": n_lags_tested,
             "is_significant": is_significant,
             "lag_results": lag_results,
         }
