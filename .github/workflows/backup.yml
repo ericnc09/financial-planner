@@ -1,0 +1,46 @@
+name: Nightly DB Backup
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 3 AM ET daily, after the evening pipeline run
+  workflow_dispatch:        # allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install Postgres client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      # Dumps only when DATABASE_URL points at Postgres. In SQLite mode
+      # (pre-launch) there is no hosted DB to back up, so the job no-ops
+      # instead of failing.
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*)
+              echo "Postgres detected — dumping."
+              pg_dump "$DATABASE_URL" --no-owner --format=custom \
+                --file="smart_money_$(date -u +%Y%m%d).dump"
+              ;;
+            *)
+              echo "DATABASE_URL is not Postgres (SQLite mode or unset) — nothing to back up."
+              echo "SKIP=true" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Upload backup artifact
+        if: env.SKIP != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: '*.dump'
+          retention-days: 14
+          if-no-files-found: error

@@ -55,6 +55,13 @@ FINNHUB_API_KEY=your_finnhub_key_here
 # Optional — raises the BLS quota from 25 to 500 req/day
 BLS_API_KEY=your_bls_key_here
 
+# Production hardening (recommended before public deployment)
+# Mutating endpoints (pipeline run, perf update, model train) require this
+# token via the X-Admin-Token header. Unset = those endpoints return 503.
+ADMIN_API_TOKEN=generate_a_long_random_string
+# Error monitoring (free tier at sentry.io). Unset = Sentry disabled.
+SENTRY_DSN=https://your_key@your_org.ingest.sentry.io/project_id
+
 # Database (defaults to SQLite)
 DATABASE_URL=sqlite:///./smart_money.db
 
@@ -180,6 +187,7 @@ See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) for the full catalog of additio
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/api/health` | GET | Liveness + DB check for uptime monitors |
 | `/api/top-pick` | GET | The single stock most probable for near-term outperformance (`lookback_days` param) |
 | `/api/sectors` | GET | Industry/sector breakdown of recent activity — counts, avg conviction/ensemble, top ticker per sector |
 | `/api/signals` | GET | All signals with filters: `days`, `source`, `min_conviction`, `sector` |
@@ -198,10 +206,10 @@ See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) for the full catalog of additio
 | `/api/prices/{ticker}` | GET | Historical price data for a ticker (`days` param: 7–730, default 365) |
 | `/api/backtest` | POST | Run backtest with `start_date`, `end_date`, `conviction_threshold` |
 | `/api/performance/summary` | GET | Signal performance tracking (win rates, returns) |
-| `/api/performance/update` | POST | Trigger performance update for all signals |
+| `/api/performance/update` | POST | Trigger performance update for all signals 🔒 admin |
 | `/api/export/signals` | GET | Export signals as CSV or JSON (`format` param) |
 | `/api/export/analysis/{ticker}` | GET | Export ticker analysis as CSV or JSON |
-| `/api/pipeline/run` | POST | Trigger full pipeline cycle |
+| `/api/pipeline/run` | POST | Trigger full pipeline cycle 🔒 admin |
 | `/api/dashboard` | GET | Combined signals + macro for dashboard |
 | `/docs` | GET | Interactive Swagger API documentation |
 
@@ -362,6 +370,18 @@ This system implements institutional-grade statistical safeguards to eliminate f
 | **D4 — Bootstrap CI** | 95% confidence intervals on Sharpe/win-rate |
 | **D5 — Isotonic Calibration** | Live score → P(win) mapping |
 | **D6 — Deflated Sharpe** | Multiple-testing correction at strategy level |
+
+---
+
+## Production Hardening
+
+Built-in safeguards for public deployment:
+
+- **Admin gate** — `POST /api/pipeline/run`, `/api/performance/update`, and `/api/ml/xgboost/train` require the `X-Admin-Token` header (constant-time compared against `ADMIN_API_TOKEN`). Locked by default: if no token is configured, they return 503. The dashboard's Run Pipeline button prompts for the token once and remembers it locally.
+- **Rate limiting** (slowapi, per-IP) — 120/min global default, 20/min on `/api/prices/{ticker}` (each uncached hit is a live yfinance call), 5/min on backtests. Price history is served from a 15-minute in-memory TTL cache.
+- **Compliance banner** — "research signals, not financial advice" rendered persistently on the dashboard (publisher-exemption posture), in addition to the per-pick disclaimer in Slack and the Top Pick card.
+- **Monitoring** — set `SENTRY_DSN` for error tracking (free tier works); point UptimeRobot (or any monitor) at `GET /api/health`, which checks API liveness and database connectivity.
+- **Backups** — `.github/workflows/backup.yml` runs a nightly `pg_dump` at 3 AM ET against the `DATABASE_URL` secret and stores 14 days of artifacts. No-ops gracefully while still in SQLite mode.
 
 ---
 

@@ -1,12 +1,18 @@
 import asyncio
+import secrets as _secrets
+import time as _time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import structlog
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import desc
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from sqlalchemy import desc, text
 
 from config.settings import Settings
 from src.models.database import (
@@ -34,6 +40,36 @@ from src.pipeline.orchestrator import Orchestrator
 
 logger = structlog.get_logger()
 settings = Settings()
+
+# Error monitoring — no-op unless SENTRY_DSN is configured
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+        )
+        logger.info("sentry.initialized")
+    except Exception as e:
+        logger.warning("sentry.init_failed", error=str(e))
+
+
+def require_admin(x_admin_token: str | None = Header(default=None)):
+    """Gate for mutating endpoints. Locked entirely when no token configured —
+    open-by-default would let anyone trigger pipeline runs and burn API quotas."""
+    expected = settings.admin_api_token
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints disabled: ADMIN_API_TOKEN is not configured",
+        )
+    if not x_admin_token or not _secrets.compare_digest(x_admin_token, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Admin-Token header",
+        )
 
 
 # --- Response Models ---
@@ -304,6 +340,14 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Per-IP rate limiting: generous global default, strict limits on endpoints
+# that trigger live upstream calls (yfinance) or heavy compute.
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -319,6 +363,25 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {"name": "Smart Money Follows", "version": "1.0.0", "docs": "/docs", "dashboard": "/api/dashboard"}
+
+
+@app.get("/api/health")
+def health():
+    """Liveness + DB check for uptime monitors (e.g. UptimeRobot)."""
+    db_ok = False
+    session = app.state.session_factory()
+    try:
+        session.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception as e:
+        logger.warning("health.db_check_failed", error=str(e))
+    finally:
+        session.close()
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db": db_ok,
+        "time": datetime.utcnow().isoformat(),
+    }
 
 
 @app.get("/api/signals", response_model=list[SignalResponse])
@@ -1153,9 +1216,9 @@ def get_performance_summary():
         session.close()
 
 
-@app.post("/api/performance/update")
+@app.post("/api/performance/update", dependencies=[Depends(require_admin)])
 async def trigger_performance_update():
-    """Update performance tracking for all signals."""
+    """Update performance tracking for all signals. Admin-only."""
     from src.tracking.performance import PerformanceTracker
     tracker = PerformanceTracker(app.state.session_factory)
     asyncio.create_task(tracker.update_performance())
@@ -1259,22 +1322,45 @@ class PriceHistoryResponse(BaseModel):
     closes: list[float]
 
 
+# In-memory TTL cache for price history — every uncached request is a live
+# yfinance call, so this is the quota guard for the hottest public endpoint.
+_PRICE_CACHE: dict[tuple[str, int], tuple[float, PriceHistoryResponse]] = {}
+_PRICE_CACHE_TTL = 900.0  # 15 minutes
+_PRICE_CACHE_MAX = 500
+
+
 @app.get("/api/prices/{ticker}", response_model=PriceHistoryResponse)
-async def get_price_history(ticker: str, days: int = Query(default=365, ge=7, le=730)):
+@limiter.limit("20/minute")
+async def get_price_history(
+    request: Request, ticker: str, days: int = Query(default=365, ge=7, le=730)
+):
     from src.clients.yahoo import YahooClient
 
+    ticker = ticker.upper()
+    cache_key = (ticker, days)
+    cached = _PRICE_CACHE.get(cache_key)
+    now = _time.monotonic()
+    if cached and now - cached[0] < _PRICE_CACHE_TTL:
+        return cached[1]
+
     yahoo = YahooClient()
-    data = await yahoo.get_price_history(ticker.upper(), days=days)
+    data = await yahoo.get_price_history(ticker, days=days)
     if data is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"No price data for {ticker}")
     dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d) for d in data["dates"]]
     closes = [float(c) for c in data["closes"]]
-    return PriceHistoryResponse(ticker=ticker.upper(), dates=dates, closes=closes)
+    response = PriceHistoryResponse(ticker=ticker, dates=dates, closes=closes)
+
+    if len(_PRICE_CACHE) >= _PRICE_CACHE_MAX:
+        oldest = min(_PRICE_CACHE, key=lambda k: _PRICE_CACHE[k][0])
+        _PRICE_CACHE.pop(oldest, None)
+    _PRICE_CACHE[cache_key] = (now, response)
+    return response
 
 
 @app.post("/api/backtest", response_model=BacktestResponse)
-async def run_backtest(req: BacktestRequest):
+@limiter.limit("5/minute")
+async def run_backtest(request: Request, req: BacktestRequest):
     from src.backtesting.backtester import Backtester
     from src.clients.yahoo import YahooClient
 
@@ -1310,7 +1396,8 @@ async def run_backtest(req: BacktestRequest):
 
 
 @app.post("/api/backtest/oos")
-async def run_oos_backtest(req: BacktestRequest, train_pct: float = 0.7):
+@limiter.limit("5/minute")
+async def run_oos_backtest(request: Request, req: BacktestRequest, train_pct: float = 0.7):
     """Out-of-sample backtest: split into train/test by date, compare metrics."""
     from src.backtesting.backtester import Backtester
     from src.clients.yahoo import YahooClient
@@ -1323,8 +1410,9 @@ async def run_oos_backtest(req: BacktestRequest, train_pct: float = 0.7):
     return result
 
 
-@app.post("/api/pipeline/run")
+@app.post("/api/pipeline/run", dependencies=[Depends(require_admin)])
 async def trigger_pipeline():
+    """Trigger a full pipeline cycle. Admin-only."""
     orchestrator = Orchestrator(app.state.settings)
     asyncio.create_task(_run_pipeline(orchestrator))
     return {"status": "started", "message": "Pipeline cycle triggered in background"}
@@ -1349,14 +1437,13 @@ def get_dashboard():
     )
 
 
-@app.post("/api/ml/xgboost/train")
+@app.post("/api/ml/xgboost/train", dependencies=[Depends(require_admin)])
 def train_xgboost():
-    """Train XGBoost classifier on historical signals with realized returns."""
+    """Train XGBoost classifier on historical signals. Admin-only."""
     from src.analysis.xgboost_classifier import XGBoostSignalClassifier
 
     session = app.state.session_factory()
     try:
-        from src.models.database import SmartMoneyEvent, Enrichment, ConvictionScore, PerformanceRecord
         from sqlalchemy.orm import joinedload
 
         events = (
@@ -1368,7 +1455,7 @@ def train_xgboost():
             .all()
         )
 
-        perf_rows = {p.event_id: p for p in session.query(PerformanceRecord).all()}
+        perf_rows = {p.event_id: p for p in session.query(SignalPerformance).all()}
 
         records = []
         for evt in events:
@@ -1392,7 +1479,7 @@ def train_xgboost():
                 "fundamental_score": cs.fundamental_score if cs else None,
                 "macro_modifier": cs.macro_modifier if cs else None,
                 "conviction": cs.conviction if cs else None,
-                "direction_encoded": 1.0 if evt.direction == "buy" else -1.0,
+                "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
                 "return_20d": perf.return_20d,
             }
             records.append(record)
@@ -1447,12 +1534,12 @@ def predict_xgboost(ticker: str):
             "fundamental_score": cs.fundamental_score if cs else 0,
             "macro_modifier": cs.macro_modifier if cs else 0,
             "conviction": cs.conviction if cs else 0,
-            "direction_encoded": 1.0 if evt.direction == "buy" else -1.0,
+            "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
         }
 
         prediction = clf.predict(features)
         prediction["ticker"] = ticker.upper()
-        prediction["direction"] = evt.direction
+        prediction["direction"] = evt.direction.value
         return prediction
     finally:
         session.close()

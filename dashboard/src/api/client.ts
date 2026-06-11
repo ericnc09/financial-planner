@@ -23,7 +23,11 @@ export const api = {
   getEventStudySummary: () => fetchJson<any>('/analysis/event-study/summary'),
   getMeanVariance: () => fetchJson<MeanVarianceData>('/analysis/mean-variance'),
   getAllEnsembleScores: () => fetchJson<EnsembleScoreData[]>('/analysis/ensemble/all'),
-  triggerPipeline: () => fetch(`${BASE}/pipeline/run`, { method: 'POST' }).then(r => r.json()),
+  triggerPipeline: (adminToken?: string) =>
+    fetch(`${BASE}/pipeline/run`, {
+      method: 'POST',
+      headers: adminToken ? { 'X-Admin-Token': adminToken } : {},
+    }),
   runBacktest: (startDate: string, endDate: string, threshold: number): Promise<BacktestResult> =>
     fetch(`${BASE}/backtest`, {
       method: 'POST',

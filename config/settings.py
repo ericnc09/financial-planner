@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     pipeline_mode: Literal["oneshot", "daemon"] = "oneshot"
     schedule_interval_minutes: int = 60
 
+    # Production hardening
+    # Mutating API endpoints (pipeline run, perf update, model train) require
+    # this token via X-Admin-Token header. Unset = those endpoints are disabled.
+    admin_api_token: str | None = None
+    sentry_dsn: str | None = None  # error monitoring; unset = Sentry disabled
+
     # Alerts
     slack_webhook_url: str | None = None
 

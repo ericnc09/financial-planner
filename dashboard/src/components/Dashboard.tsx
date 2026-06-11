@@ -76,6 +76,17 @@ export const Dashboard: React.FC<Props> = ({ data, onRefresh, onRunPipeline, loa
         </div>
       </div>
 
+      {/* Compliance disclaimer — publisher-exemption posture: research
+          publication, not personalized investment advice */}
+      <div style={{
+        background: '#1c1917', border: '1px solid #f59e0b33', borderRadius: 8,
+        padding: '8px 14px', marginBottom: 16, fontSize: 12, color: '#fbbf24',
+      }}>
+        ⚠️ Research signals for educational purposes only — <b>not financial advice</b>.
+        Past performance of insider, congressional, or institutional trades does not
+        guarantee future results. You decide, you execute.
+      </div>
+
       {/* Morning Top Pick */}
       <SafeCard><TopPickCard onTickerClick={setSelectedTicker} /></SafeCard>
 

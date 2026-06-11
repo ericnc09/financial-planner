@@ -6,6 +6,7 @@ import type { DashboardData } from './types';
 const EMPTY_DATA: DashboardData = {
   signals: [],
   macro: null,
+  extended_macro: null,
 };
 
 const App: React.FC = () => {
@@ -29,7 +30,23 @@ const App: React.FC = () => {
 
   const runPipeline = async () => {
     try {
-      await api.triggerPipeline();
+      // Pipeline runs are admin-gated; remember the token locally after first use
+      let token = localStorage.getItem('admin_token') || undefined;
+      let res = await api.triggerPipeline(token);
+      if (res.status === 401) {
+        const entered = window.prompt('Admin token required to run the pipeline:');
+        if (!entered) return;
+        res = await api.triggerPipeline(entered);
+        if (res.ok) localStorage.setItem('admin_token', entered);
+      }
+      if (res.status === 503) {
+        window.alert('Pipeline runs are disabled on this deployment (no admin token configured on the server).');
+        return;
+      }
+      if (!res.ok) {
+        window.alert(`Pipeline trigger failed: ${res.status}`);
+        return;
+      }
       setTimeout(fetchData, 2000);
     } catch (e) {
       console.error('Pipeline trigger error:', e);

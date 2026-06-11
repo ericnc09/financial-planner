@@ -111,9 +111,12 @@ class XGBoostSignalClassifier:
             from sklearn.metrics import accuracy_score, roc_auc_score
             from sklearn.model_selection import TimeSeriesSplit, cross_val_score
             from sklearn.inspection import permutation_importance
-        except ImportError:
-            logger.error("xgboost.import_failed", hint="pip install xgboost scikit-learn")
-            return {"status": "error", "message": "xgboost or scikit-learn not installed"}
+        except Exception as e:
+            # Catch more than ImportError: xgboost raises XGBoostError at import
+            # time when the OpenMP runtime (libomp) is missing on macOS.
+            logger.error("xgboost.import_failed", error=str(e),
+                         hint="pip install xgboost scikit-learn; on macOS: brew install libomp")
+            return {"status": "error", "message": f"model libraries unavailable: {e}"}
 
         X, y, valid_count = self._build_dataset(records)
         if X is None or len(X) < MIN_SAMPLES_LOGISTIC:
