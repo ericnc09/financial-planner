@@ -1,0 +1,996 @@
+{
+  "as_of": "2026-06-11",
+  "start": "2026-03-30",
+  "n_all": 61,
+  "n_high_conviction": 40,
+  "dead_tickers": [],
+  "dates": [
+    "2026-03-30",
+    "2026-03-31",
+    "2026-04-01",
+    "2026-04-02",
+    "2026-04-06",
+    "2026-04-07",
+    "2026-04-08",
+    "2026-04-09",
+    "2026-04-10",
+    "2026-04-13",
+    "2026-04-14",
+    "2026-04-15",
+    "2026-04-16",
+    "2026-04-17",
+    "2026-04-20",
+    "2026-04-21",
+    "2026-04-22",
+    "2026-04-23",
+    "2026-04-24",
+    "2026-04-27",
+    "2026-04-28",
+    "2026-04-29",
+    "2026-04-30",
+    "2026-05-01",
+    "2026-05-04",
+    "2026-05-05",
+    "2026-05-06",
+    "2026-05-07",
+    "2026-05-08",
+    "2026-05-11",
+    "2026-05-12",
+    "2026-05-13",
+    "2026-05-14",
+    "2026-05-15",
+    "2026-05-18",
+    "2026-05-19",
+    "2026-05-20",
+    "2026-05-21",
+    "2026-05-22",
+    "2026-05-26",
+    "2026-05-27",
+    "2026-05-28",
+    "2026-05-29",
+    "2026-06-01",
+    "2026-06-02",
+    "2026-06-03",
+    "2026-06-04",
+    "2026-06-05",
+    "2026-06-08",
+    "2026-06-09",
+    "2026-06-10",
+    "2026-06-11"
+  ],
+  "series": {
+    "all_buys": [
+      99.951,
+      100.424,
+      100.542,
+      100.623,
+      100.766,
+      100.622,
+      101.291,
+      101.425,
+      101.198,
+      101.976,
+      102.231,
+      102.641,
+      102.444,
+      103.045,
+      104.16,
+      103.707,
+      104.705,
+      104.017,
+      104.005,
+      103.806,
+      103.061,
+      102.532,
+      103.832,
+      103.829,
+      103.491,
+      103.434,
+      104.109,
+      103.966,
+      104.118,
+      104.865,
+      104.225,
+      104.695,
+      104.768,
+      103.079,
+      103.149,
+      102.315,
+      103.932,
+      104.724,
+      104.775,
+      106.883,
+      106.679,
+      107.771,
+      108.241,
+      109.742,
+      109.793,
+      107.323,
+      108.504,
+      105.38,
+      106.03,
+      106.311,
+      106.279,
+      108.914
+    ],
+    "high_conviction": [
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+      99.977,
+      100.918,
+      100.845,
+      101.403,
+      100.804,
+      100.964,
+      101.015,
+      100.635,
+      100.472,
+      100.59,
+      100.05,
+      100.105,
+      99.545,
+      99.11,
+      99.611,
+      99.739,
+      99.591,
+      99.388,
+      99.019,
+      99.158,
+      99.256,
+      100.322,
+      99.942,
+      99.667,
+      100.269,
+      98.662,
+      99.144,
+      98.362,
+      99.35,
+      99.711,
+      99.533,
+      101.809,
+      101.56,
+      103.353,
+      103.472,
+      103.608,
+      103.037,
+      101.16,
+      101.909,
+      99.068,
+      99.616,
+      99.604,
+      99.114,
+      101.463
+    ],
+    "sp500": [
+      100.0,
+      102.913,
+      103.651,
+      103.767,
+      104.226,
+      104.306,
+      106.922,
+      107.581,
+      107.459,
+      108.552,
+      109.831,
+      110.707,
+      110.996,
+      112.333,
+      112.066,
+      111.354,
+      112.519,
+      112.054,
+      112.948,
+      113.087,
+      112.533,
+      112.488,
+      113.64,
+      113.973,
+      113.51,
+      114.432,
+      116.101,
+      115.659,
+      116.634,
+      116.853,
+      116.666,
+      117.348,
+      118.247,
+      116.785,
+      116.699,
+      115.92,
+      117.171,
+      117.372,
+      117.809,
+      118.529,
+      118.548,
+      119.23,
+      119.489,
+      119.803,
+      119.958,
+      119.073,
+      119.556,
+      116.394,
+      116.741,
+      116.44,
+      114.554,
+      116.561
+    ],
+    "nasdaq": [
+      100.0,
+      103.828,
+      105.032,
+      105.215,
+      105.779,
+      105.882,
+      108.85,
+      109.751,
+      110.138,
+      111.489,
+      113.679,
+      115.491,
+      115.908,
+      117.667,
+      117.359,
+      116.664,
+      118.577,
+      117.523,
+      119.438,
+      119.68,
+      118.607,
+      118.652,
+      119.705,
+      120.774,
+      120.549,
+      121.792,
+      124.258,
+      124.1,
+      126.22,
+      126.35,
+      125.456,
+      126.967,
+      128.087,
+      126.115,
+      125.469,
+      124.41,
+      126.332,
+      126.442,
+      126.686,
+      128.188,
+      128.277,
+      129.444,
+      129.709,
+      130.259,
+      130.293,
+      129.139,
+      129.028,
+      123.635,
+      124.694,
+      123.488,
+      121.038,
+      124.117
+    ]
+  },
+  "totals_pct": {
+    "all_buys": 8.91,
+    "high_conviction": 1.46,
+    "sp500": 16.56,
+    "nasdaq": 24.12
+  },
+  "picks_all": [
+    {
+      "ticker": "CMPS",
+      "entry_date": "2026-03-30",
+      "entry": 5.24,
+      "last": 11.41,
+      "return_pct": 117.45
+    },
+    {
+      "ticker": "CBRL",
+      "entry_date": "2026-03-30",
+      "entry": 27.53,
+      "last": 45.5,
+      "return_pct": 64.99
+    },
+    {
+      "ticker": "CRWD",
+      "entry_date": "2026-04-21",
+      "entry": 449.61,
+      "last": 691.53,
+      "return_pct": 53.51
+    },
+    {
+      "ticker": "JEF",
+      "entry_date": "2026-03-30",
+      "entry": 39.34,
+      "last": 59.66,
+      "return_pct": 51.37
+    },
+    {
+      "ticker": "LGIH",
+      "entry_date": "2026-03-30",
+      "entry": 37.75,
+      "last": 55.39,
+      "return_pct": 46.43
+    },
+    {
+      "ticker": "AGPU",
+      "entry_date": "2026-04-21",
+      "entry": 4.88,
+      "last": 7.16,
+      "return_pct": 46.42
+    },
+    {
+      "ticker": "DLTH",
+      "entry_date": "2026-05-06",
+      "entry": 3.27,
+      "last": 4.77,
+      "return_pct": 45.57
+    },
+    {
+      "ticker": "TSM",
+      "entry_date": "2026-03-30",
+      "entry": 315.76,
+      "last": 421.07,
+      "return_pct": 33.05
+    },
+    {
+      "ticker": "OPRA",
+      "entry_date": "2026-03-30",
+      "entry": 13.6,
+      "last": 17.77,
+      "return_pct": 30.36
+    },
+    {
+      "ticker": "GUER",
+      "entry_date": "2026-05-15",
+      "entry": 2.37,
+      "last": 2.98,
+      "return_pct": 25.86
+    },
+    {
+      "ticker": "CASY",
+      "entry_date": "2026-04-16",
+      "entry": 736.71,
+      "last": 916.28,
+      "return_pct": 24.07
+    },
+    {
+      "ticker": "ACDC",
+      "entry_date": "2026-04-10",
+      "entry": 5.88,
+      "last": 7.07,
+      "return_pct": 19.94
+    },
+    {
+      "ticker": "CARR",
+      "entry_date": "2026-04-16",
+      "entry": 59.5,
+      "last": 69.74,
+      "return_pct": 16.91
+    },
+    {
+      "ticker": "PODC",
+      "entry_date": "2026-05-14",
+      "entry": 3.61,
+      "last": 4.2,
+      "return_pct": 16.04
+    },
+    {
+      "ticker": "HSBC",
+      "entry_date": "2026-03-30",
+      "entry": 78.91,
+      "last": 90.72,
+      "return_pct": 14.66
+    },
+    {
+      "ticker": "NAVN",
+      "entry_date": "2026-05-22",
+      "entry": 19.88,
+      "last": 22.63,
+      "return_pct": 13.53
+    },
+    {
+      "ticker": "CAKE",
+      "entry_date": "2026-06-01",
+      "entry": 65.88,
+      "last": 74.98,
+      "return_pct": 13.51
+    },
+    {
+      "ticker": "URI",
+      "entry_date": "2026-05-12",
+      "entry": 953.79,
+      "last": 1068.49,
+      "return_pct": 11.73
+    },
+    {
+      "ticker": "BEKE",
+      "entry_date": "2026-03-30",
+      "entry": 14.74,
+      "last": 16.4,
+      "return_pct": 10.98
+    },
+    {
+      "ticker": "EVTC",
+      "entry_date": "2026-05-11",
+      "entry": 23.02,
+      "last": 25.4,
+      "return_pct": 10.04
+    },
+    {
+      "ticker": "TRS",
+      "entry_date": "2026-04-16",
+      "entry": 37.19,
+      "last": 41.02,
+      "return_pct": 9.99
+    },
+    {
+      "ticker": "WPP",
+      "entry_date": "2026-05-12",
+      "entry": 16.98,
+      "last": 18.69,
+      "return_pct": 9.75
+    },
+    {
+      "ticker": "MRP",
+      "entry_date": "2026-05-13",
+      "entry": 26.67,
+      "last": 29.28,
+      "return_pct": 9.49
+    },
+    {
+      "ticker": "MAR",
+      "entry_date": "2026-04-16",
+      "entry": 361.71,
+      "last": 396.89,
+      "return_pct": 9.43
+    },
+    {
+      "ticker": "ARXS",
+      "entry_date": "2026-04-21",
+      "entry": 37.75,
+      "last": 41.38,
+      "return_pct": 9.32
+    },
+    {
+      "ticker": "SHBI",
+      "entry_date": "2026-05-26",
+      "entry": 20.33,
+      "last": 22.28,
+      "return_pct": 9.28
+    },
+    {
+      "ticker": "OI",
+      "entry_date": "2026-05-15",
+      "entry": 8.35,
+      "last": 9.05,
+      "return_pct": 8.08
+    },
+    {
+      "ticker": "CNC",
+      "entry_date": "2026-05-13",
+      "entry": 58.81,
+      "last": 63.54,
+      "return_pct": 7.74
+    },
+    {
+      "ticker": "LILA",
+      "entry_date": "2026-05-12",
+      "entry": 7.41,
+      "last": 7.9,
+      "return_pct": 6.31
+    },
+    {
+      "ticker": "TER",
+      "entry_date": "2026-05-12",
+      "entry": 358.31,
+      "last": 381.4,
+      "return_pct": 6.14
+    },
+    {
+      "ticker": "IHG",
+      "entry_date": "2026-05-20",
+      "entry": 155.1,
+      "last": 164.43,
+      "return_pct": 5.72
+    },
+    {
+      "ticker": "FLEX",
+      "entry_date": "2026-05-13",
+      "entry": 143.8,
+      "last": 151.99,
+      "return_pct": 5.4
+    },
+    {
+      "ticker": "CDNS",
+      "entry_date": "2026-05-11",
+      "entry": 364.2,
+      "last": 383.74,
+      "return_pct": 5.07
+    },
+    {
+      "ticker": "CVS",
+      "entry_date": "2026-05-15",
+      "entry": 95.89,
+      "last": 100.48,
+      "return_pct": 4.49
+    },
+    {
+      "ticker": "RYCEY",
+      "entry_date": "2026-05-20",
+      "entry": 16.52,
+      "last": 17.29,
+      "return_pct": 4.36
+    },
+    {
+      "ticker": "PTCT",
+      "entry_date": "2026-05-15",
+      "entry": 71.47,
+      "last": 74.71,
+      "return_pct": 4.23
+    },
+    {
+      "ticker": "SLND",
+      "entry_date": "2026-04-10",
+      "entry": 1.03,
+      "last": 1.07,
+      "return_pct": 3.58
+    },
+    {
+      "ticker": "WAB",
+      "entry_date": "2026-04-16",
+      "entry": 255.19,
+      "last": 262.09,
+      "return_pct": 2.4
+    },
+    {
+      "ticker": "HMC",
+      "entry_date": "2026-06-02",
+      "entry": 26.48,
+      "last": 27.07,
+      "return_pct": 1.93
+    },
+    {
+      "ticker": "CACI",
+      "entry_date": "2026-04-21",
+      "entry": 518.38,
+      "last": 525.42,
+      "return_pct": 1.06
+    },
+    {
+      "ticker": "TPC",
+      "entry_date": "2026-05-22",
+      "entry": 72.76,
+      "last": 73.61,
+      "return_pct": 0.87
+    },
+    {
+      "ticker": "AXR",
+      "entry_date": "2026-05-15",
+      "entry": 25.19,
+      "last": 25.31,
+      "return_pct": 0.18
+    },
+    {
+      "ticker": "STKL",
+      "entry_date": "2026-04-21",
+      "entry": 6.48,
+      "last": 6.5,
+      "return_pct": 0.01
+    },
+    {
+      "ticker": "SWX",
+      "entry_date": "2026-05-13",
+      "entry": 88.08,
+      "last": 88.02,
+      "return_pct": -0.37
+    },
+    {
+      "ticker": "FIHBX",
+      "entry_date": "2026-05-11",
+      "entry": 8.92,
+      "last": 8.9,
+      "return_pct": -0.52
+    },
+    {
+      "ticker": "CRON",
+      "entry_date": "2026-05-12",
+      "entry": 2.77,
+      "last": 2.75,
+      "return_pct": -1.02
+    },
+    {
+      "ticker": "RZLV",
+      "entry_date": "2026-05-15",
+      "entry": 2.55,
+      "last": 2.53,
+      "return_pct": -1.08
+    },
+    {
+      "ticker": "PMEC",
+      "entry_date": "2026-03-30",
+      "entry": 0.73,
+      "last": 0.7,
+      "return_pct": -3.98
+    },
+    {
+      "ticker": "IRM",
+      "entry_date": "2026-05-11",
+      "entry": 129.96,
+      "last": 125.17,
+      "return_pct": -3.99
+    },
+    {
+      "ticker": "ALMR",
+      "entry_date": "2026-04-21",
+      "entry": 23.23,
+      "last": 22.19,
+      "return_pct": -4.78
+    },
+    {
+      "ticker": "VINP",
+      "entry_date": "2026-05-14",
+      "entry": 10.3,
+      "last": 9.71,
+      "return_pct": -6.05
+    },
+    {
+      "ticker": "NEE",
+      "entry_date": "2026-04-16",
+      "entry": 91.16,
+      "last": 84.84,
+      "return_pct": -7.24
+    },
+    {
+      "ticker": "AXON",
+      "entry_date": "2026-06-02",
+      "entry": 490.12,
+      "last": 446.2,
+      "return_pct": -9.26
+    },
+    {
+      "ticker": "BZUN",
+      "entry_date": "2026-04-21",
+      "entry": 2.98,
+      "last": 2.7,
+      "return_pct": -9.7
+    },
+    {
+      "ticker": "AESI",
+      "entry_date": "2026-05-11",
+      "entry": 18.84,
+      "last": 16.47,
+      "return_pct": -12.88
+    },
+    {
+      "ticker": "FLUX",
+      "entry_date": "2026-06-02",
+      "entry": 1.06,
+      "last": 0.91,
+      "return_pct": -14.26
+    },
+    {
+      "ticker": "VNT",
+      "entry_date": "2026-03-30",
+      "entry": 34.18,
+      "last": 28.67,
+      "return_pct": -16.42
+    },
+    {
+      "ticker": "BETR",
+      "entry_date": "2026-05-13",
+      "entry": 29.0,
+      "last": 24.1,
+      "return_pct": -17.2
+    },
+    {
+      "ticker": "BMNR",
+      "entry_date": "2026-04-21",
+      "entry": 21.71,
+      "last": 16.52,
+      "return_pct": -24.21
+    },
+    {
+      "ticker": "AVEX",
+      "entry_date": "2026-04-21",
+      "entry": 35.99,
+      "last": 21.46,
+      "return_pct": -40.67
+    },
+    {
+      "ticker": "BNZI",
+      "entry_date": "2026-04-10",
+      "entry": 10.74,
+      "last": 3.02,
+      "return_pct": -72.18
+    }
+  ],
+  "picks_high_conviction": [
+    {
+      "ticker": "CRWD",
+      "entry_date": "2026-04-21",
+      "entry": 449.61,
+      "last": 691.53,
+      "return_pct": 53.51
+    },
+    {
+      "ticker": "GUER",
+      "entry_date": "2026-05-15",
+      "entry": 2.37,
+      "last": 2.98,
+      "return_pct": 25.86
+    },
+    {
+      "ticker": "CASY",
+      "entry_date": "2026-04-16",
+      "entry": 736.71,
+      "last": 916.28,
+      "return_pct": 24.07
+    },
+    {
+      "ticker": "ACDC",
+      "entry_date": "2026-04-10",
+      "entry": 5.88,
+      "last": 7.07,
+      "return_pct": 19.94
+    },
+    {
+      "ticker": "PODC",
+      "entry_date": "2026-05-14",
+      "entry": 3.61,
+      "last": 4.2,
+      "return_pct": 16.04
+    },
+    {
+      "ticker": "URI",
+      "entry_date": "2026-05-12",
+      "entry": 953.79,
+      "last": 1068.49,
+      "return_pct": 11.73
+    },
+    {
+      "ticker": "TRS",
+      "entry_date": "2026-04-16",
+      "entry": 37.19,
+      "last": 41.02,
+      "return_pct": 9.99
+    },
+    {
+      "ticker": "WPP",
+      "entry_date": "2026-05-12",
+      "entry": 16.98,
+      "last": 18.69,
+      "return_pct": 9.75
+    },
+    {
+      "ticker": "MRP",
+      "entry_date": "2026-05-13",
+      "entry": 26.67,
+      "last": 29.28,
+      "return_pct": 9.49
+    },
+    {
+      "ticker": "MAR",
+      "entry_date": "2026-04-16",
+      "entry": 361.71,
+      "last": 396.89,
+      "return_pct": 9.43
+    },
+    {
+      "ticker": "ARXS",
+      "entry_date": "2026-04-21",
+      "entry": 37.75,
+      "last": 41.38,
+      "return_pct": 9.32
+    },
+    {
+      "ticker": "OI",
+      "entry_date": "2026-05-15",
+      "entry": 8.35,
+      "last": 9.05,
+      "return_pct": 8.08
+    },
+    {
+      "ticker": "CNC",
+      "entry_date": "2026-05-13",
+      "entry": 58.81,
+      "last": 63.54,
+      "return_pct": 7.74
+    },
+    {
+      "ticker": "LILA",
+      "entry_date": "2026-05-12",
+      "entry": 7.41,
+      "last": 7.9,
+      "return_pct": 6.31
+    },
+    {
+      "ticker": "TER",
+      "entry_date": "2026-05-12",
+      "entry": 358.31,
+      "last": 381.4,
+      "return_pct": 6.14
+    },
+    {
+      "ticker": "IHG",
+      "entry_date": "2026-05-20",
+      "entry": 155.1,
+      "last": 164.43,
+      "return_pct": 5.72
+    },
+    {
+      "ticker": "FLEX",
+      "entry_date": "2026-05-13",
+      "entry": 143.8,
+      "last": 151.99,
+      "return_pct": 5.4
+    },
+    {
+      "ticker": "CVS",
+      "entry_date": "2026-05-15",
+      "entry": 95.89,
+      "last": 100.48,
+      "return_pct": 4.49
+    },
+    {
+      "ticker": "RYCEY",
+      "entry_date": "2026-05-20",
+      "entry": 16.52,
+      "last": 17.29,
+      "return_pct": 4.36
+    },
+    {
+      "ticker": "PTCT",
+      "entry_date": "2026-05-15",
+      "entry": 71.47,
+      "last": 74.71,
+      "return_pct": 4.23
+    },
+    {
+      "ticker": "SLND",
+      "entry_date": "2026-04-10",
+      "entry": 1.03,
+      "last": 1.07,
+      "return_pct": 3.58
+    },
+    {
+      "ticker": "WAB",
+      "entry_date": "2026-04-16",
+      "entry": 255.19,
+      "last": 262.09,
+      "return_pct": 2.4
+    },
+    {
+      "ticker": "HMC",
+      "entry_date": "2026-06-02",
+      "entry": 26.48,
+      "last": 27.07,
+      "return_pct": 1.93
+    },
+    {
+      "ticker": "CACI",
+      "entry_date": "2026-04-21",
+      "entry": 518.38,
+      "last": 525.42,
+      "return_pct": 1.06
+    },
+    {
+      "ticker": "TPC",
+      "entry_date": "2026-05-22",
+      "entry": 72.76,
+      "last": 73.61,
+      "return_pct": 0.87
+    },
+    {
+      "ticker": "AXR",
+      "entry_date": "2026-05-15",
+      "entry": 25.19,
+      "last": 25.31,
+      "return_pct": 0.18
+    },
+    {
+      "ticker": "STKL",
+      "entry_date": "2026-04-21",
+      "entry": 6.48,
+      "last": 6.5,
+      "return_pct": 0.01
+    },
+    {
+      "ticker": "FIHBX",
+      "entry_date": "2026-05-11",
+      "entry": 8.92,
+      "last": 8.9,
+      "return_pct": -0.52
+    },
+    {
+      "ticker": "CRON",
+      "entry_date": "2026-05-12",
+      "entry": 2.77,
+      "last": 2.75,
+      "return_pct": -1.02
+    },
+    {
+      "ticker": "RZLV",
+      "entry_date": "2026-05-15",
+      "entry": 2.55,
+      "last": 2.53,
+      "return_pct": -1.08
+    },
+    {
+      "ticker": "IRM",
+      "entry_date": "2026-05-11",
+      "entry": 129.96,
+      "last": 125.17,
+      "return_pct": -3.99
+    },
+    {
+      "ticker": "ALMR",
+      "entry_date": "2026-04-21",
+      "entry": 23.23,
+      "last": 22.19,
+      "return_pct": -4.78
+    },
+    {
+      "ticker": "VINP",
+      "entry_date": "2026-05-14",
+      "entry": 10.3,
+      "last": 9.71,
+      "return_pct": -6.05
+    },
+    {
+      "ticker": "NEE",
+      "entry_date": "2026-04-16",
+      "entry": 91.16,
+      "last": 84.84,
+      "return_pct": -7.24
+    },
+    {
+      "ticker": "BZUN",
+      "entry_date": "2026-04-21",
+      "entry": 2.98,
+      "last": 2.7,
+      "return_pct": -9.7
+    },
+    {
+      "ticker": "FLUX",
+      "entry_date": "2026-06-02",
+      "entry": 1.06,
+      "last": 0.91,
+      "return_pct": -14.26
+    },
+    {
+      "ticker": "BETR",
+      "entry_date": "2026-05-13",
+      "entry": 29.0,
+      "last": 24.1,
+      "return_pct": -17.2
+    },
+    {
+      "ticker": "BMNR",
+      "entry_date": "2026-04-21",
+      "entry": 21.71,
+      "last": 16.52,
+      "return_pct": -24.21
+    },
+    {
+      "ticker": "AVEX",
+      "entry_date": "2026-04-21",
+      "entry": 35.99,
+      "last": 21.46,
+      "return_pct": -40.67
+    },
+    {
+      "ticker": "BNZI",
+      "entry_date": "2026-04-10",
+      "entry": 10.74,
+      "last": 3.02,
+      "return_pct": -72.18
+    }
+  ]
+}

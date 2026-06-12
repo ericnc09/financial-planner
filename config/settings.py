@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     # this token via X-Admin-Token header. Unset = those endpoints are disabled.
     admin_api_token: str | None = None
     sentry_dsn: str | None = None  # error monitoring; unset = Sentry disabled
+    # Comma-separated CORS origins; set to the real frontend URL at deploy
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
     # Alerts
     slack_webhook_url: str | None = None

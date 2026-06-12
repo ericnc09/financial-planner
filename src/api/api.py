@@ -1,13 +1,15 @@
 import asyncio
+import re as _re
 import secrets as _secrets
 import time as _time
 from contextlib import asynccontextmanager
+from datetime import date as _date
 from datetime import datetime, timedelta
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -70,6 +72,43 @@ def require_admin(x_admin_token: str | None = Header(default=None)):
             status_code=401,
             detail="Invalid or missing X-Admin-Token header",
         )
+
+
+_TICKER_RE = _re.compile(r"^[A-Za-z0-9.\-^]{1,10}$")
+
+
+def _clean_ticker(ticker: str) -> str:
+    """Reject junk before it reaches yfinance URLs, DB queries, or caches."""
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=422, detail="Invalid ticker symbol")
+    return ticker.upper()
+
+
+def _csv_safe(value):
+    """Neutralize spreadsheet formula injection. Actor names come from
+    external filings, so a crafted name like '=HYPERLINK(...)' would execute
+    when a user opens the exported CSV in Excel/Sheets."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t"):
+        return "'" + value
+    return value
+
+
+def _parse_iso_date(value: str, field: str) -> _date:
+    try:
+        return _date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{field} must be YYYY-MM-DD")
+
+
+def _validate_backtest_range(req: "BacktestRequest"):
+    start = _parse_iso_date(req.start_date, "start_date")
+    end = _parse_iso_date(req.end_date, "end_date")
+    if start >= end:
+        raise HTTPException(status_code=422, detail="start_date must be before end_date")
+    if start < _date(2000, 1, 1) or end > _date.today():
+        raise HTTPException(status_code=422, detail="dates must be between 2000-01-01 and today")
+    if (end - start).days > 1095:
+        raise HTTPException(status_code=422, detail="date range limited to 3 years")
 
 
 # --- Response Models ---
@@ -295,7 +334,7 @@ class PerformanceSummaryResponse(BaseModel):
 class BacktestRequest(BaseModel):
     start_date: str   # YYYY-MM-DD
     end_date: str     # YYYY-MM-DD
-    conviction_threshold: float = 0.6
+    conviction_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
 class PeriodMetricsResponse(BaseModel):
@@ -350,7 +389,7 @@ app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -451,6 +490,7 @@ def get_signals(
 
 @app.get("/api/signals/{ticker}", response_model=list[SignalResponse])
 def get_signals_by_ticker(ticker: str):
+    ticker = _clean_ticker(ticker)
     session = app.state.session_factory()
     try:
         query = (
@@ -460,7 +500,7 @@ def get_signals_by_ticker(ticker: str):
                 SmartMoneyEvent.id == ConvictionScore.event_id,
             )
             .outerjoin(Enrichment, SmartMoneyEvent.id == Enrichment.event_id)
-            .filter(SmartMoneyEvent.ticker == ticker.upper())
+            .filter(SmartMoneyEvent.ticker == ticker)
             .order_by(desc(SmartMoneyEvent.trade_date))
         )
         results = []
@@ -664,7 +704,7 @@ def get_macro_history(days: int = Query(default=90, ge=1, le=365)):
 @app.get("/api/analysis/{ticker}", response_model=TickerAnalysisResponse)
 def get_ticker_analysis(ticker: str):
     """Get all analysis model results for a ticker."""
-    ticker = ticker.upper()
+    ticker = _clean_ticker(ticker)
     session = app.state.session_factory()
     try:
         mc = session.query(MonteCarloResult).filter(
@@ -854,7 +894,7 @@ def get_ticker_analysis(ticker: str):
 @app.get("/api/analysis/{ticker}/options", response_model=OptionsFlowResponse | None)
 def get_options_flow(ticker: str):
     """Get latest options flow analysis for a ticker."""
-    ticker = ticker.upper()
+    ticker = _clean_ticker(ticker)
     session = app.state.session_factory()
     try:
         row = session.query(OptionsFlow).filter(
@@ -976,7 +1016,7 @@ def get_news_sentiment(ticker: str):
     session = app.state.session_factory()
     try:
         row = session.query(NewsSentimentResult).filter(
-            NewsSentimentResult.ticker == ticker.upper()
+            NewsSentimentResult.ticker == _clean_ticker(ticker)
         ).order_by(desc(NewsSentimentResult.run_date)).first()
         if not row:
             return None
@@ -1249,9 +1289,10 @@ def export_signals(
     writer.writerow(["id", "ticker", "actor", "direction", "size_estimate", "trade_date",
                      "source_type", "conviction", "passes_threshold", "sector", "price_at_signal"])
     for s in signals:
-        writer.writerow([s.id, s.ticker, s.actor, s.direction, s.size_estimate,
-                        s.trade_date, s.source_type, s.conviction, s.passes_threshold,
-                        s.sector, s.price_at_signal])
+        writer.writerow([_csv_safe(v) for v in (
+            s.id, s.ticker, s.actor, s.direction, s.size_estimate,
+            s.trade_date, s.source_type, s.conviction, s.passes_threshold,
+            s.sector, s.price_at_signal)])
     return Response(content=output.getvalue(), media_type="text/csv",
                    headers={"Content-Disposition": "attachment; filename=signals.csv"})
 
@@ -1264,6 +1305,7 @@ def export_analysis(ticker: str, format: str = Query(default="csv")):
     import io
     import json as _json
 
+    ticker = _clean_ticker(ticker)
     data = get_ticker_analysis(ticker)
 
     if format == "json":
@@ -1336,7 +1378,7 @@ async def get_price_history(
 ):
     from src.clients.yahoo import YahooClient
 
-    ticker = ticker.upper()
+    ticker = _clean_ticker(ticker)
     cache_key = (ticker, days)
     cached = _PRICE_CACHE.get(cache_key)
     now = _time.monotonic()
@@ -1364,6 +1406,7 @@ async def run_backtest(request: Request, req: BacktestRequest):
     from src.backtesting.backtester import Backtester
     from src.clients.yahoo import YahooClient
 
+    _validate_backtest_range(req)
     yahoo = YahooClient()
     bt = Backtester(app.state.settings, yahoo)
     result = await bt.run(req.start_date, req.end_date, req.conviction_threshold)
@@ -1397,11 +1440,16 @@ async def run_backtest(request: Request, req: BacktestRequest):
 
 @app.post("/api/backtest/oos")
 @limiter.limit("5/minute")
-async def run_oos_backtest(request: Request, req: BacktestRequest, train_pct: float = 0.7):
+async def run_oos_backtest(
+    request: Request,
+    req: BacktestRequest,
+    train_pct: float = Query(default=0.7, ge=0.5, le=0.9),
+):
     """Out-of-sample backtest: split into train/test by date, compare metrics."""
     from src.backtesting.backtester import Backtester
     from src.clients.yahoo import YahooClient
 
+    _validate_backtest_range(req)
     yahoo = YahooClient()
     bt = Backtester(app.state.settings, yahoo)
     result = await bt.run_oos(
@@ -1499,6 +1547,7 @@ def train_xgboost():
 @app.post("/api/ml/xgboost/predict")
 def predict_xgboost(ticker: str):
     """Get XGBoost prediction for a specific ticker's latest signal."""
+    ticker = _clean_ticker(ticker)
     clf = getattr(app.state, "xgboost_model", None)
     if clf is None or clf.model is None:
         return {"error": "Model not trained. POST /api/ml/xgboost/train first."}

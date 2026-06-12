@@ -163,6 +163,8 @@ class Orchestrator:
 
         if not new_events:
             logger.info("orchestrator.no_new_events")
+            # Returns keep accruing even when no new signals arrive
+            await self._update_signal_performance()
             # Still produce the morning top pick from recent signals in the DB
             await self._send_morning_top_pick()
             return
@@ -249,10 +251,25 @@ class Orchestrator:
                     price=enrichment.price_at_signal,
                 )
 
-        # --- Step 5: MORNING TOP PICK ---
+        # --- Step 5: PERFORMANCE TRACKING ---
+        await self._update_signal_performance()
+
+        # --- Step 6: MORNING TOP PICK ---
         await self._send_morning_top_pick()
 
         logger.info("orchestrator.cycle_complete")
+
+    async def _update_signal_performance(self):
+        """Refresh realized 5/10/20/60d returns for past signals. Without this
+        the live track record silently goes stale between manual runs."""
+        try:
+            from src.tracking.performance import PerformanceTracker
+
+            tracker = PerformanceTracker(self.session_factory)
+            updated = await tracker.update_performance()
+            logger.info("orchestrator.performance_updated", rows=updated)
+        except Exception as e:
+            logger.warning("orchestrator.performance_update_failed", error=str(e))
 
     async def _send_morning_top_pick(self):
         """Select and announce the single most promising stock for the
