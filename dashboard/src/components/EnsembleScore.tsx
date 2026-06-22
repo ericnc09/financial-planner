@@ -13,6 +13,10 @@ const COMPONENT_LABELS: Record<string, string> = {
   copula_tail: 'Copula Tail',
   bayesian_decay: 'Signal Decay',
   event_study: 'Event Study',
+  options_flow: 'Options Flow',
+  earnings_overlay: 'Earnings',
+  news_sentiment: 'News',
+  weather_overlay: 'Weather',
 };
 
 const scoreColor = (s: number) => s >= 70 ? '#22c55e' : s >= 45 ? '#f59e0b' : '#ef4444';

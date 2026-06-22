@@ -28,7 +28,7 @@ export const FactorExposure: React.FC<Props> = ({ data }) => {
         {' | '}R²: {((data.r_squared || 0) * 100).toFixed(0)}%
       </div>
 
-      {factors.map(({ label, value, desc }) => {
+      {factors.map(({ label, value }) => {
         const v = value || 0;
         const isPositive = v >= 0;
         const barWidth = (Math.abs(v) / maxAbs) * 50;

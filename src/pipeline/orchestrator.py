@@ -446,6 +446,7 @@ class Orchestrator:
                 rsi_14d=enrichment_schema.rsi_14d,
                 drawdown_from_52w_high=enrichment_schema.drawdown_from_52w_high,
                 avg_volume_30d=enrichment_schema.avg_volume_30d,
+                short_ratio=enrichment_schema.short_ratio,
                 sector=enrichment_schema.sector,
             )
             session.add(enr)
@@ -1131,6 +1132,10 @@ class Orchestrator:
                 score_copula=components.get("copula_tail"),
                 score_bayesian_decay=components.get("bayesian_decay"),
                 score_event_study=components.get("event_study"),
+                score_options_flow=components.get("options_flow"),
+                score_earnings_overlay=components.get("earnings_overlay"),
+                score_news_sentiment=components.get("news_sentiment"),
+                score_weather_overlay=components.get("weather_overlay"),
             )
             session.add(row)
             session.commit()

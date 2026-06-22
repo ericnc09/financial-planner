@@ -5,41 +5,49 @@ interface Props {
   data: ExtendedMacroData;
 }
 
+type MacroIndicator = {
+  label: string;
+  value: number | null;
+  format: (v: number) => string;
+  color: (v: number) => string;
+  desc: string;
+};
+
 export const ExtendedMacro: React.FC<Props> = ({ data }) => {
-  const indicators = [
+  const indicators: MacroIndicator[] = [
     {
       label: 'VIX',
       value: data.vix,
       format: (v: number) => v.toFixed(1),
-      color: v => v > 30 ? '#ef4444' : v > 20 ? '#f59e0b' : '#22c55e',
+      color: (v: number) => v > 30 ? '#ef4444' : v > 20 ? '#f59e0b' : '#22c55e',
       desc: 'Fear gauge',
     },
     {
       label: 'Consumer Sentiment',
       value: data.consumer_sentiment,
       format: (v: number) => v.toFixed(1),
-      color: v => v < 60 ? '#ef4444' : v < 80 ? '#f59e0b' : '#22c55e',
+      color: (v: number) => v < 60 ? '#ef4444' : v < 80 ? '#f59e0b' : '#22c55e',
       desc: 'UMich survey',
     },
     {
       label: 'M2 Supply',
       value: data.money_supply_m2,
       format: (v: number) => `$${(v / 1000).toFixed(1)}T`,
-      color: () => '#6366f1',
+      color: (_v: number) => '#6366f1',
       desc: 'Money supply',
     },
     {
       label: 'Housing Starts',
       value: data.housing_starts,
       format: (v: number) => `${v.toFixed(0)}k`,
-      color: v => v < 1200 ? '#ef4444' : v < 1500 ? '#f59e0b' : '#22c55e',
+      color: (v: number) => v < 1200 ? '#ef4444' : v < 1500 ? '#f59e0b' : '#22c55e',
       desc: 'New construction',
     },
     {
       label: 'Industrial Prod.',
       value: data.industrial_production,
       format: (v: number) => v.toFixed(1),
-      color: () => '#c9d1d9',
+      color: (_v: number) => '#c9d1d9',
       desc: 'Output index',
     },
   ];
@@ -61,7 +69,7 @@ export const ExtendedMacro: React.FC<Props> = ({ data }) => {
             <div style={{ fontSize: 10, color: '#8b949e' }}>{label}</div>
             <div style={{
               fontSize: 16, fontWeight: 700,
-              color: value != null ? (color as any)(value) : '#484f58',
+              color: value != null ? color(value) : '#484f58',
             }}>
               {value != null ? format(value) : '—'}
             </div>

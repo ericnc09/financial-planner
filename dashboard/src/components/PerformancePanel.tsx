@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../api/client';
 
 interface PerformanceSummary {
   total_signals: number;

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
@@ -89,6 +90,7 @@ class Enrichment(Base):
     rsi_14d = Column(Float, nullable=True)
     drawdown_from_52w_high = Column(Float, nullable=True)
     avg_volume_30d = Column(Float, nullable=True)
+    short_ratio = Column(Float, nullable=True)
 
     sector = Column(String(100), nullable=True)
     enriched_at = Column(DateTime, default=datetime.utcnow)
@@ -401,6 +403,10 @@ class EnsembleScoreResult(Base):
     score_copula = Column(Float, nullable=True)
     score_bayesian_decay = Column(Float, nullable=True)
     score_event_study = Column(Float, nullable=True)
+    score_options_flow = Column(Float, nullable=True)
+    score_earnings_overlay = Column(Float, nullable=True)
+    score_news_sentiment = Column(Float, nullable=True)
+    score_weather_overlay = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -538,7 +544,41 @@ def get_session_factory(engine):
 def init_db(database_url: str):
     engine = get_engine(database_url)
     Base.metadata.create_all(engine)
+    _ensure_sqlite_schema(engine)
     return engine
+
+
+def _ensure_sqlite_schema(engine):
+    """Apply lightweight additive schema upgrades for local SQLite DBs.
+
+    SQLAlchemy's create_all() creates missing tables but does not add columns
+    to existing tables. The project currently ships as SQLite-first, so keep
+    additive upgrades here until formal migrations are introduced.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    additive_columns = {
+        "ensemble_score_results": {
+            "score_options_flow": "FLOAT",
+            "score_earnings_overlay": "FLOAT",
+            "score_news_sentiment": "FLOAT",
+            "score_weather_overlay": "FLOAT",
+        },
+        "enrichments": {
+            "short_ratio": "FLOAT",
+        },
+    }
+
+    with engine.begin() as conn:
+        for table, columns in additive_columns.items():
+            existing = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            }
+            for name, ddl_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
 
 
 if __name__ == "__main__":

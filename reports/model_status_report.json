@@ -1,0 +1,367 @@
+{
+  "generated_at": "2026-06-22T14:31:05.208577",
+  "database": "/Users/eric/financial-planner/smart_money.db",
+  "table_counts": {
+    "events": 202,
+    "enrichments": 189,
+    "conviction_scores": 189,
+    "ensemble_scores": 492,
+    "performance": 202,
+    "monte_carlo": 386,
+    "hmm": 353,
+    "garch": 350,
+    "fama_french": 373,
+    "copula_tail": 369,
+    "event_study": 0,
+    "bayesian_decay": 0,
+    "options_flow": 322,
+    "news_sentiment": 0,
+    "mean_variance": 27
+  },
+  "ensemble": {
+    "latest_rows": 189,
+    "n_models_distribution": {
+      "1": 20,
+      "4": 1,
+      "6": 14,
+      "7": 154
+    },
+    "component_presence": {
+      "monte_carlo": {
+        "latest_rows_present": 169,
+        "all_rows_present": 466,
+        "latest_coverage": 0.8942
+      },
+      "hmm_regime": {
+        "latest_rows_present": 168,
+        "all_rows_present": 450,
+        "latest_coverage": 0.8889
+      },
+      "garch": {
+        "latest_rows_present": 168,
+        "all_rows_present": 450,
+        "latest_coverage": 0.8889
+      },
+      "fama_french": {
+        "latest_rows_present": 169,
+        "all_rows_present": 466,
+        "latest_coverage": 0.8942
+      },
+      "copula_tail": {
+        "latest_rows_present": 168,
+        "all_rows_present": 461,
+        "latest_coverage": 0.8889
+      },
+      "bayesian_decay": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      },
+      "event_study": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      },
+      "options_flow": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      },
+      "earnings_overlay": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      },
+      "news_sentiment": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      },
+      "weather_overlay": {
+        "latest_rows_present": 0,
+        "all_rows_present": 0,
+        "latest_coverage": 0.0
+      }
+    },
+    "missing_latest_components": [
+      "bayesian_decay",
+      "event_study",
+      "options_flow",
+      "earnings_overlay",
+      "news_sentiment",
+      "weather_overlay"
+    ]
+  },
+  "performance_20d": {
+    "conviction_correlation": {
+      "n": 134,
+      "pearson": -0.0061,
+      "spearman": -0.0264
+    },
+    "latest_ensemble_correlation": {
+      "n": 134,
+      "pearson": -0.0598,
+      "spearman": 0.0995
+    },
+    "component_correlations": {
+      "monte_carlo": {
+        "n": 115,
+        "pearson": -0.1769,
+        "spearman": -0.1253
+      },
+      "hmm_regime": {
+        "n": 114,
+        "pearson": 0.0081,
+        "spearman": 0.1056
+      },
+      "garch": {
+        "n": 114,
+        "pearson": 0.0601,
+        "spearman": 0.0943
+      },
+      "fama_french": {
+        "n": 115,
+        "pearson": -0.0589,
+        "spearman": -0.1449
+      },
+      "copula_tail": {
+        "n": 114,
+        "pearson": 0.0749,
+        "spearman": -0.0143
+      },
+      "bayesian_decay": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      },
+      "event_study": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      },
+      "options_flow": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      },
+      "earnings_overlay": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      },
+      "news_sentiment": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      },
+      "weather_overlay": {
+        "n": 0,
+        "pearson": null,
+        "spearman": null
+      }
+    },
+    "recommendation_buckets": {
+      "avoid": {
+        "n": 4,
+        "avg_return": 0.2677,
+        "win_rate": 1.0
+      },
+      "buy": {
+        "n": 34,
+        "avg_return": 0.0847,
+        "win_rate": 0.7647
+      },
+      "hold": {
+        "n": 79,
+        "avg_return": -0.0195,
+        "win_rate": 0.4051
+      },
+      "sell": {
+        "n": 17,
+        "avg_return": -0.0602,
+        "win_rate": 0.5294
+      }
+    },
+    "conviction_buckets": {
+      "high_conviction": {
+        "n": 88,
+        "avg_return": 0.0092,
+        "win_rate": 0.5455
+      },
+      "other": {
+        "n": 46,
+        "avg_return": 0.0126,
+        "win_rate": 0.5
+      }
+    },
+    "source_buckets": {
+      "congressional": {
+        "n": 21,
+        "avg_return": 0.0334,
+        "win_rate": 0.7143
+      },
+      "insider": {
+        "n": 144,
+        "avg_return": 0.031,
+        "win_rate": 0.5417
+      }
+    },
+    "direction_buckets": {
+      "buy": {
+        "n": 109,
+        "avg_return": 0.0585,
+        "win_rate": 0.5963
+      },
+      "sell": {
+        "n": 56,
+        "avg_return": -0.0218,
+        "win_rate": 0.5
+      }
+    }
+  },
+  "validation_20d": {
+    "calibration": {
+      "buckets": {
+        "0-20": {
+          "n": 0,
+          "actual_win_rate": null,
+          "expected_win_rate": 0.1,
+          "calibration_error": null
+        },
+        "20-40": {
+          "n": 4,
+          "actual_win_rate": 1.0,
+          "expected_win_rate": 0.3,
+          "calibration_error": 0.7
+        },
+        "40-60": {
+          "n": 115,
+          "actual_win_rate": 0.5217,
+          "expected_win_rate": 0.5,
+          "calibration_error": 0.0217
+        },
+        "60-75": {
+          "n": 15,
+          "actual_win_rate": 0.4667,
+          "expected_win_rate": 0.675,
+          "calibration_error": 0.2083
+        },
+        "75-90": {
+          "n": 0,
+          "actual_win_rate": null,
+          "expected_win_rate": 0.825,
+          "calibration_error": null
+        },
+        "90-100": {
+          "n": 0,
+          "actual_win_rate": null,
+          "expected_win_rate": 0.95,
+          "calibration_error": null
+        }
+      },
+      "mean_calibration_error": 0.31,
+      "well_calibrated": false
+    },
+    "isotonic_calibrator": {
+      "status": "fitted",
+      "n_samples": 134,
+      "n_fit": 93,
+      "n_eval": 41,
+      "calibration_map": {
+        "20": 0.2889,
+        "40": 0.2889,
+        "55": 0.56,
+        "65": 0.6364,
+        "75": 1.0,
+        "85": 1.0,
+        "95": 1.0
+      },
+      "train_mae": 0.4408,
+      "oos_mae": 0.4779
+    },
+    "bootstrap_all": {
+      "n": 134,
+      "n_bootstrap": 2000,
+      "confidence_level": 0.95,
+      "sharpe_ratio": {
+        "point": 1.1115,
+        "lower": -1.5122,
+        "upper": 3.9164
+      },
+      "win_rate": {
+        "point": 0.5289,
+        "lower": 0.4478,
+        "upper": 0.6119
+      },
+      "avg_return": {
+        "point": 0.0103,
+        "lower": -0.0149,
+        "upper": 0.0352
+      }
+    },
+    "bootstrap_buy_recommendations": {
+      "n": 34,
+      "n_bootstrap": 2000,
+      "confidence_level": 0.95,
+      "sharpe_ratio": {
+        "point": 11.7864,
+        "lower": 6.3331,
+        "upper": 17.9248
+      },
+      "win_rate": {
+        "point": 0.7645,
+        "lower": 0.6176,
+        "upper": 0.9118
+      },
+      "avg_return": {
+        "point": 0.0845,
+        "lower": 0.0473,
+        "upper": 0.1263
+      }
+    },
+    "deflated_sharpe_all": {
+      "status": "complete",
+      "observed_sharpe": 0.2439,
+      "expected_max_sharpe": 1.7707,
+      "se_sharpe": 0.0903,
+      "dsr_statistic": -16.8994,
+      "p_value": 1.0,
+      "n_observations": 134,
+      "n_strategies_tried": 15,
+      "is_significant": false,
+      "verdict": "NOT_SIGNIFICANT \u2014 Sharpe could be due to luck given strategies tried"
+    },
+    "deflated_sharpe_buy_recommendations": {
+      "status": "complete",
+      "observed_sharpe": 2.5115,
+      "expected_max_sharpe": 1.7707,
+      "se_sharpe": 0.4191,
+      "dsr_statistic": 1.7675,
+      "p_value": 0.0386,
+      "n_observations": 34,
+      "n_strategies_tried": 15,
+      "is_significant": true,
+      "verdict": "SIGNIFICANT \u2014 Sharpe survives multiple testing correction"
+    },
+    "n_strategies_tried_assumption": 15,
+    "acceptance_gates": {
+      "gates": {
+        "minimum_20d_samples": true,
+        "ensemble_rank_ic_positive": true,
+        "conviction_rank_ic_positive": false,
+        "buy_bucket_beats_hold": true,
+        "sell_bucket_positive": false,
+        "high_conviction_beats_other": false,
+        "all_claimed_components_present": false
+      },
+      "passed": 3,
+      "total": 7,
+      "overall_status": "fail"
+    }
+  },
+  "xgboost": {
+    "status": "not_trained",
+    "model_path": "/Users/eric/financial-planner/src/analysis/xgboost_model.pkl",
+    "model_file_exists": false
+  }
+}

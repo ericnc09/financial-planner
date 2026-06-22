@@ -1,4 +1,4 @@
-.PHONY: init-db run-once run-daemon run-api run-dashboard run-slack-bot test backtest install
+.PHONY: init-db run-once run-daemon run-api run-dashboard run-slack-bot test backtest install model-status
 
 install:
 	pip install -r requirements.txt
@@ -29,3 +29,6 @@ run-slack-bot:
 
 validate:
 	python -m src.backtesting.validator
+
+model-status:
+	python scripts/model_status_report.py

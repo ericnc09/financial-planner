@@ -16,7 +16,7 @@ export const MeanVarianceChart: React.FC = () => {
   if (loading) return <div style={{ color: '#8b949e', fontSize: 13, padding: 16 }}>Loading portfolio...</div>;
   if (!data) return null;
 
-  const { max_sharpe, min_variance, equal_weight, efficient_frontier, risk_contribution, tickers } = data;
+  const { max_sharpe, min_variance, equal_weight, efficient_frontier, risk_contribution } = data;
 
   // --- Efficient Frontier Chart ---
   const W = 340;

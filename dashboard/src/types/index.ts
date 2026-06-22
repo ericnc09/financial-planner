@@ -5,7 +5,7 @@ export interface Signal {
   direction: 'buy' | 'sell';
   size_estimate: number | null;
   trade_date: string;
-  source_type: 'congressional' | 'insider';
+  source_type: 'congressional' | 'insider' | 'institutional';
   signal_score: number | null;
   fundamental_score: number | null;
   macro_modifier: number | null;
@@ -78,6 +78,7 @@ export interface GARCHData {
   forecast_20d_vol: number | null;
   forecast_20d_ratio: number | null;
   forecast_20d_interpretation: string | null;
+  n_observations: number | null;
 }
 
 export interface FamaFrenchData {
@@ -96,7 +97,7 @@ export interface EventStudyData {
   ticker: string;
   event_id: number;
   direction: 'buy' | 'sell';
-  source_type: 'insider' | 'congressional' | null;
+  source_type: 'insider' | 'congressional' | 'institutional' | null;
   car_1d: number | null;
   car_5d: number | null;
   car_10d: number | null;

@@ -86,6 +86,7 @@ class XGBoostSignalClassifier:
         self.model = None
         self.model_type = None  # "xgboost" or "logistic"
         self.selected_features = None  # features that survived selection
+        self.feature_impute_values = None  # median fallback per feature
         self.feature_importance = None
         self.train_metrics = None
 
@@ -128,6 +129,8 @@ class XGBoostSignalClassifier:
             }
 
         n_samples = len(X)
+        self.feature_impute_values = self._fit_impute_values(X)
+        X_model = self._impute_array(X)
 
         # ── Step 1: Select model type based on sample size ──
         if n_samples < MIN_SAMPLES_XGBOOST:
@@ -168,8 +171,8 @@ class XGBoostSignalClassifier:
         cv_scores = []
         per_fold_features = []  # track which features each fold selects
 
-        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
-            X_train_fold, X_test_fold = X[train_idx], X[test_idx]
+        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X_model)):
+            X_train_fold, X_test_fold = X_model[train_idx], X_model[test_idx]
             y_train_fold, y_test_fold = y[train_idx], y[test_idx]
 
             # Feature selection on training fold only
@@ -230,7 +233,7 @@ class XGBoostSignalClassifier:
             self.selected_features = [f for f, _ in ranked_feats]
             selected_indices = [FEATURE_COLS.index(f) for f in self.selected_features]
 
-        X_selected = X[:, selected_indices]
+        X_selected = X_model[:, selected_indices]
         logger.info(
             "xgboost.feature_selection",
             n_original=len(FEATURE_COLS),
@@ -296,6 +299,7 @@ class XGBoostSignalClassifier:
             "is_overfitting": overfit_gap > 0.15,
             "is_better_than_null": is_better_than_null,
             "feature_importance": dict(sorted_features),
+            "missing_imputation": "median",
             "trained_at": datetime.utcnow().isoformat(),
         }
 
@@ -327,11 +331,21 @@ class XGBoostSignalClassifier:
         """
         if self.model is None:
             return None
+        if self.train_metrics and not self.train_metrics.get("is_better_than_null", False):
+            return {
+                "status": "unreliable_model",
+                "message": "Model CV AUC is not meaningfully above the null threshold.",
+                "is_better_than_null": False,
+                "cv_auc": self.train_metrics.get("cv_auc_mean"),
+            }
 
         # Use selected features if available (from feature selection), else all
         cols = self.selected_features if self.selected_features else FEATURE_COLS
-        row = [features.get(col, 0.0) or 0.0 for col in cols]
+        row = [self._coerce_float(features.get(col)) for col in cols]
         X = np.array([row])
+        if self.feature_impute_values:
+            fill = np.array([self.feature_impute_values.get(col, 0.0) for col in cols])
+            X = np.where(np.isnan(X), fill.reshape(1, len(cols)), X)
         prob = float(self.model.predict_proba(X)[0, 1])
         predicted_class = "profitable" if prob >= 0.5 else "unprofitable"
 
@@ -364,6 +378,7 @@ class XGBoostSignalClassifier:
                     "model": self.model,
                     "model_type": self.model_type,
                     "selected_features": self.selected_features,
+                    "feature_impute_values": self.feature_impute_values,
                     "feature_importance": self.feature_importance,
                     "train_metrics": self.train_metrics,
                     "feature_cols": FEATURE_COLS,
@@ -387,6 +402,7 @@ class XGBoostSignalClassifier:
             instance.model = data["model"]
             instance.model_type = data.get("model_type", "xgboost")
             instance.selected_features = data.get("selected_features")
+            instance.feature_impute_values = data.get("feature_impute_values")
             instance.feature_importance = data.get("feature_importance")
             instance.train_metrics = data.get("train_metrics")
             logger.info("xgboost.loaded", path=path,
@@ -440,10 +456,37 @@ class XGBoostSignalClassifier:
             ret = r.get("return_20d")
             if ret is None:
                 continue
-            row = [float(r.get(col) or 0.0) for col in FEATURE_COLS]
+            row = [self._coerce_float(r.get(col)) for col in FEATURE_COLS]
             rows.append(row)
             labels.append(1 if ret > 0 else 0)
 
         if not rows:
             return None, None, 0
         return np.array(rows), np.array(labels), len(rows)
+
+    @staticmethod
+    def _coerce_float(value) -> float:
+        if value is None:
+            return np.nan
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return np.nan
+        return val if np.isfinite(val) else np.nan
+
+    @staticmethod
+    def _fit_impute_values(X: np.ndarray) -> dict[str, float]:
+        values = {}
+        for i, feature in enumerate(FEATURE_COLS):
+            col = X[:, i]
+            if np.all(np.isnan(col)):
+                values[feature] = 0.0
+            else:
+                values[feature] = float(np.nanmedian(col))
+        return values
+
+    def _impute_array(self, X: np.ndarray) -> np.ndarray:
+        if self.feature_impute_values is None:
+            self.feature_impute_values = self._fit_impute_values(X)
+        fill = np.array([self.feature_impute_values.get(f, 0.0) for f in FEATURE_COLS])
+        return np.where(np.isnan(X), fill.reshape(1, -1), X)

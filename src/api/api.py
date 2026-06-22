@@ -31,6 +31,7 @@ from src.models.database import (
     MacroSnapshot,
     MeanVarianceResult,
     MonteCarloResult,
+    NewsSentimentResult,
     OptionsFlow,
     SignalPerformance,
     SmartMoneyEvent,
@@ -177,6 +178,7 @@ class GARCHResponse(BaseModel):
     forecast_20d_vol: float | None = None
     forecast_20d_ratio: float | None = None
     forecast_20d_interpretation: str | None = None
+    n_observations: int | None = None
 
 
 class FamaFrenchResponse(BaseModel):
@@ -289,6 +291,24 @@ class EnsembleScoreResponse(BaseModel):
     components: dict
 
 
+def _ensemble_components(e: EnsembleScoreResult) -> dict:
+    return {
+        k: v for k, v in {
+            "monte_carlo": e.score_monte_carlo,
+            "hmm_regime": e.score_hmm,
+            "garch": e.score_garch,
+            "fama_french": e.score_fama_french,
+            "copula_tail": e.score_copula,
+            "bayesian_decay": e.score_bayesian_decay,
+            "event_study": e.score_event_study,
+            "options_flow": e.score_options_flow,
+            "earnings_overlay": e.score_earnings_overlay,
+            "news_sentiment": e.score_news_sentiment,
+            "weather_overlay": e.score_weather_overlay,
+        }.items() if v is not None
+    }
+
+
 class OptionsFlowResponse(BaseModel):
     ticker: str
     analysis_date: datetime
@@ -371,6 +391,8 @@ async def lifespan(app: FastAPI):
     engine = init_db(settings.database_url)
     app.state.session_factory = get_session_factory(engine)
     app.state.settings = settings
+    from src.analysis.xgboost_classifier import XGBoostSignalClassifier
+    app.state.xgboost_model = XGBoostSignalClassifier.load()
     yield
 
 
@@ -768,6 +790,7 @@ def get_ticker_analysis(ticker: str):
                 forecast_5d_interpretation=garch.forecast_5d_interpretation,
                 forecast_20d_vol=garch.forecast_20d_vol, forecast_20d_ratio=garch.forecast_20d_ratio,
                 forecast_20d_interpretation=garch.forecast_20d_interpretation,
+                n_observations=garch.n_observations,
             )
 
         ff_resp = None
@@ -849,14 +872,7 @@ def get_ticker_analysis(ticker: str):
                 ticker=e.ticker, event_id=e.event_id, direction=e.direction,
                 total_score=e.total_score, confidence=e.confidence,
                 recommendation=e.recommendation, n_models=e.n_models,
-                components={
-                    k: v for k, v in {
-                        "monte_carlo": e.score_monte_carlo, "hmm_regime": e.score_hmm,
-                        "garch": e.score_garch, "fama_french": e.score_fama_french,
-                        "copula_tail": e.score_copula, "bayesian_decay": e.score_bayesian_decay,
-                        "event_study": e.score_event_study,
-                    }.items() if v is not None
-                },
+                components=_ensemble_components(e),
             ) for e in ens_rows]
 
         # Options Flow
@@ -1165,14 +1181,7 @@ def get_all_ensemble_scores():
             ticker=e.ticker, event_id=e.event_id, direction=e.direction,
             total_score=e.total_score, confidence=e.confidence,
             recommendation=e.recommendation, n_models=e.n_models,
-            components={
-                k: v for k, v in {
-                    "monte_carlo": e.score_monte_carlo, "hmm_regime": e.score_hmm,
-                    "garch": e.score_garch, "fama_french": e.score_fama_french,
-                    "copula_tail": e.score_copula, "bayesian_decay": e.score_bayesian_decay,
-                    "event_study": e.score_event_study,
-                }.items() if v is not None
-            },
+            components=_ensemble_components(e),
         ) for e in rows]
     finally:
         session.close()
@@ -1504,6 +1513,8 @@ def train_xgboost():
         )
 
         perf_rows = {p.event_id: p for p in session.query(SignalPerformance).all()}
+        tickers = {e.ticker for e in events}
+        model_rows = _latest_xgb_model_rows(session, tickers)
 
         records = []
         for evt in events:
@@ -1512,31 +1523,15 @@ def train_xgboost():
                 continue
             enr = evt.enrichment
             cs = evt.conviction_score
-            record = {
-                "pe_ratio": enr.pe_ratio if enr else None,
-                "market_cap": enr.market_cap if enr else None,
-                "revenue_growth_yoy": enr.revenue_growth_yoy if enr else None,
-                "eps_latest": enr.eps_latest if enr else None,
-                "eps_growth_yoy": enr.eps_growth_yoy if enr else None,
-                "momentum_30d": enr.momentum_30d if enr else None,
-                "momentum_90d": enr.momentum_90d if enr else None,
-                "rsi_14d": enr.rsi_14d if enr else None,
-                "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else None,
-                "avg_volume_30d": enr.avg_volume_30d if enr else None,
-                "signal_score": cs.signal_score if cs else None,
-                "fundamental_score": cs.fundamental_score if cs else None,
-                "macro_modifier": cs.macro_modifier if cs else None,
-                "conviction": cs.conviction if cs else None,
-                "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
-                "return_20d": perf.return_20d,
-            }
+            record = _build_xgb_record(evt, enr, cs, model_rows)
+            record["return_20d"] = perf.return_20d
             records.append(record)
 
         clf = XGBoostSignalClassifier()
         result = clf.train(records)
 
-        # Store on app state for prediction use
         if result.get("status") == "trained":
+            result["saved"] = clf.save()
             app.state.xgboost_model = clf
 
         return result
@@ -1554,8 +1549,6 @@ def predict_xgboost(ticker: str):
 
     session = app.state.session_factory()
     try:
-        from src.models.database import SmartMoneyEvent, Enrichment, ConvictionScore
-
         evt = (
             session.query(SmartMoneyEvent)
             .filter(SmartMoneyEvent.ticker == ticker.upper())
@@ -1567,28 +1560,73 @@ def predict_xgboost(ticker: str):
 
         enr = session.query(Enrichment).filter(Enrichment.event_id == evt.id).first()
         cs = session.query(ConvictionScore).filter(ConvictionScore.event_id == evt.id).first()
-
-        features = {
-            "pe_ratio": enr.pe_ratio if enr else 0,
-            "market_cap": enr.market_cap if enr else 0,
-            "revenue_growth_yoy": enr.revenue_growth_yoy if enr else 0,
-            "eps_latest": enr.eps_latest if enr else 0,
-            "eps_growth_yoy": enr.eps_growth_yoy if enr else 0,
-            "momentum_30d": enr.momentum_30d if enr else 0,
-            "momentum_90d": enr.momentum_90d if enr else 0,
-            "rsi_14d": enr.rsi_14d if enr else 0,
-            "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else 0,
-            "avg_volume_30d": enr.avg_volume_30d if enr else 0,
-            "signal_score": cs.signal_score if cs else 0,
-            "fundamental_score": cs.fundamental_score if cs else 0,
-            "macro_modifier": cs.macro_modifier if cs else 0,
-            "conviction": cs.conviction if cs else 0,
-            "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
-        }
+        model_rows = _latest_xgb_model_rows(session, {evt.ticker})
+        features = _build_xgb_record(evt, enr, cs, model_rows)
 
         prediction = clf.predict(features)
+        if prediction is None:
+            return {"error": "Model not trained or not reliable enough to issue predictions."}
         prediction["ticker"] = ticker.upper()
         prediction["direction"] = evt.direction.value
         return prediction
     finally:
         session.close()
+
+
+def _latest_xgb_model_rows(session, tickers: set[str]) -> dict[str, dict]:
+    def latest_by_ticker(model, date_attr):
+        rows = (
+            session.query(model)
+            .filter(model.ticker.in_(tickers))
+            .order_by(model.ticker, desc(date_attr))
+            .all()
+        )
+        latest = {}
+        for row in rows:
+            latest.setdefault(row.ticker, row)
+        return latest
+
+    return {
+        "hmm": latest_by_ticker(HMMRegimeState, HMMRegimeState.run_date),
+        "garch": latest_by_ticker(GARCHForecast, GARCHForecast.run_date),
+        "fama_french": latest_by_ticker(FamaFrenchExposure, FamaFrenchExposure.run_date),
+        "copula": latest_by_ticker(CopulaTailRiskResult, CopulaTailRiskResult.run_date),
+        "news": latest_by_ticker(NewsSentimentResult, NewsSentimentResult.run_date),
+    }
+
+
+def _build_xgb_record(evt, enr, cs, model_rows: dict[str, dict]) -> dict:
+    ticker = evt.ticker
+    hmm = model_rows.get("hmm", {}).get(ticker)
+    garch = model_rows.get("garch", {}).get(ticker)
+    ff = model_rows.get("fama_french", {}).get(ticker)
+    copula = model_rows.get("copula", {}).get(ticker)
+    news = model_rows.get("news", {}).get(ticker)
+
+    return {
+        "date": evt.trade_date.isoformat() if evt.trade_date else None,
+        "pe_ratio": enr.pe_ratio if enr else None,
+        "market_cap": enr.market_cap if enr else None,
+        "revenue_growth_yoy": enr.revenue_growth_yoy if enr else None,
+        "eps_latest": enr.eps_latest if enr else None,
+        "eps_growth_yoy": enr.eps_growth_yoy if enr else None,
+        "short_ratio": enr.short_ratio if enr else None,
+        "momentum_30d": enr.momentum_30d if enr else None,
+        "momentum_90d": enr.momentum_90d if enr else None,
+        "rsi_14d": enr.rsi_14d if enr else None,
+        "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else None,
+        "avg_volume_30d": enr.avg_volume_30d if enr else None,
+        "hmm_bull_prob": hmm.prob_bull if hmm else None,
+        "hmm_bear_prob": hmm.prob_bear if hmm else None,
+        "garch_current_vol": garch.current_vol_annual if garch else None,
+        "ff_alpha": ff.alpha_annual if ff else None,
+        "copula_tail_score": copula.tail_risk_score if copula else None,
+        "news_volume_z": news.news_volume_z if news else None,
+        "news_sentiment_mean": news.news_sentiment_mean if news else None,
+        "news_sentiment_trend_3d": news.news_sentiment_trend_3d if news else None,
+        "signal_score": cs.signal_score if cs else None,
+        "fundamental_score": cs.fundamental_score if cs else None,
+        "macro_modifier": cs.macro_modifier if cs else None,
+        "conviction": cs.conviction if cs else None,
+        "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
+    }
