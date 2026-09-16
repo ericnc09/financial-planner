@@ -1,11 +1,13 @@
 {
-  "name": "smart-money-dashboard",
+  "name": "finalyse-dashboard",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:live": "vite --mode live",
     "build": "tsc && vite build",
+    "build:live": "tsc && vite build --mode live",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -307,12 +307,16 @@ class Orchestrator:
                     source_type=SourceType(sig.source_type.value),
                     raw_payload=sig.raw_payload,
                 )
-                session.add(event)
                 try:
-                    session.flush()
-                    new_events.append((event.id, sig))
+                    # Roll back only this insert when the disclosure is already
+                    # present. A full session rollback also discards earlier
+                    # new events while leaving their IDs in new_events.
+                    with session.begin_nested():
+                        session.add(event)
+                        session.flush()
                 except IntegrityError:
-                    session.rollback()
+                    continue
+                new_events.append((event.id, sig))
             session.commit()
         finally:
             session.close()

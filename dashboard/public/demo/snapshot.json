@@ -1,0 +1,1230 @@
+{
+  "metadata": {
+    "schema_version": 1,
+    "snapshot_id": "demo-52d824797111bbd3",
+    "as_of": "2026-06-22",
+    "generated_at": "2026-09-15T19:44:47.422039Z",
+    "code_commit": "7281f8cfb62a2908b719dd1d5d6eb9e9c2acb1e0",
+    "code_dirty": true,
+    "exporter_sha256": "f6fae7b6fa3fdcc2bfb0756e6a0e913bfc0da155bbee1146f4dc921cd5e5bd85",
+    "selection_note": "Eight congressional-disclosure examples selected for matching source identities, sector variety, both trade directions, and saved model coverage. GEHC retains incomplete coverage. This is a curated research workflow, not a representative or performance-ranked sample.",
+    "limitations": [
+      "Historical research snapshot, not live market data or investment advice. Selection is based on source identity and model coverage, not returns.",
+      "Only congressional records with matching saved issuer, transaction type, and dates are included. Original filing URLs were not retained; the source link opens the provider portal.",
+      "All event-linked enrichment and score joins are excluded: the saved database contains orphan enrichment rows and inconsistent ticker-sector associations.",
+      "Model outputs were fitted on their displayed run dates and may postdate the disclosures. This demo does not recreate what a researcher could have known at the trade date.",
+      "Price history is unavailable in the saved database. The chart uses saved simulated price quantiles, not historical observations or validated forecasts.",
+      "Congressional amount bounds are omitted because the saved equal bounds come from a provider value and do not establish the original filing range."
+    ],
+    "source_counts": {
+      "tickers": 8,
+      "events": 9,
+      "congressional": 9,
+      "buy": 6,
+      "sell": 3
+    },
+    "data_quality": {
+      "excluded_enrichment_rows": 189,
+      "orphan_enrichment_rows": 18,
+      "excluded_non_congressional_events": 177
+    }
+  },
+  "tickers": [
+    {
+      "ticker": "PINS",
+      "company_name": "Pinterest Inc",
+      "sector": "Communication services",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 202,
+          "ticker": "PINS",
+          "actor": "Rep. Christian Menefee (D-TX)",
+          "direction": "sell",
+          "transaction_type": "sell",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-05-28T00:00:00Z",
+          "disclosure_date": "2026-06-02T13:01:45Z",
+          "collected_at": "2026-06-02T21:30:29.650788Z",
+          "disclosure_lag_days": 5,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": "spouse"
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-06-03T11:01:33.682741Z",
+          "current_price": 20.8700008392334,
+          "n_simulations": 10000,
+          "annual_volatility": 0.5438,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 16.58,
+              "p25": 18.18,
+              "p50": 20.1,
+              "p75": 22.28,
+              "p90": 24.43
+            },
+            {
+              "days": 90,
+              "p10": 13.34,
+              "p25": 15.74,
+              "p50": 18.86,
+              "p75": 22.56,
+              "p90": 26.4
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-06-03T11:01:33.682741Z",
+          "current_vol_annual": 0.7329,
+          "historical_vol_20d": 0.5733,
+          "forecast_5d_vol": 0.7793,
+          "forecast_20d_vol": 0.8551,
+          "forecast_20d_interpretation": "volatility_expanding",
+          "n_observations": 345
+        },
+        "hmm": {
+          "run_date": "2026-06-03T11:01:33.682741Z",
+          "current_state": "sideways",
+          "prob_bull": 0.1292,
+          "prob_bear": 0.0002,
+          "prob_sideways": 0.8706,
+          "n_observations": 345
+        },
+        "factors": {
+          "run_date": "2026-06-03T11:01:33.682741Z",
+          "beta_market": -0.611,
+          "beta_smb": 0.2784,
+          "beta_hml": -0.2027,
+          "beta_rmw": 0.146,
+          "beta_cma": -0.3634,
+          "r_squared": 0.0189
+        },
+        "copula": {
+          "run_date": "2026-06-03T11:01:52.250293Z",
+          "n_observations": 345,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": -0.0601
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-06-03T11:01:33.682741Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-06-03T11:01:33.682741Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-06-03T11:01:33.682741Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-06-03T11:01:33.682741Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-06-03T11:01:52.250293Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "CARR",
+      "company_name": "Carrier Global Corp",
+      "sector": "Industrials",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 113,
+          "ticker": "CARR",
+          "actor": "Rep. Maria Elvira Salazar (R-FL)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-05-01T00:00:00Z",
+          "disclosure_date": "2026-05-11T13:05:06Z",
+          "collected_at": "2026-05-11T21:30:45.948771Z",
+          "disclosure_lag_days": 10,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": null
+        },
+        {
+          "id": 52,
+          "ticker": "CARR",
+          "actor": "Rep. Richard Larsen (D-WA)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-07T00:00:00Z",
+          "disclosure_date": "2026-04-16T13:05:02Z",
+          "collected_at": "2026-04-16T21:30:35.511184Z",
+          "disclosure_lag_days": 9,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": null
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_price": 66.83000183105469,
+          "n_simulations": 10000,
+          "annual_volatility": 0.3581,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 58.47,
+              "p25": 62.07,
+              "p50": 66.46,
+              "p75": 71.28,
+              "p90": 76.13
+            },
+            {
+              "days": 90,
+              "p10": 52.2,
+              "p25": 58.24,
+              "p50": 65.88,
+              "p75": 74.43,
+              "p90": 82.93
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_vol_annual": 0.46,
+          "historical_vol_20d": 0.5663,
+          "forecast_5d_vol": 0.4384,
+          "forecast_20d_vol": 0.4039,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 343
+        },
+        "hmm": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_state": "bull",
+          "prob_bull": 1.0,
+          "prob_bear": 0.0,
+          "prob_sideways": null,
+          "n_observations": 343
+        },
+        "factors": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "beta_market": 0.0776,
+          "beta_smb": -0.2071,
+          "beta_hml": 0.1503,
+          "beta_rmw": -0.0457,
+          "beta_cma": -0.0319,
+          "r_squared": 0.0037
+        },
+        "copula": {
+          "run_date": "2026-05-11T21:31:17.760807Z",
+          "n_observations": 343,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": -0.012
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:31:17.760807Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "TSM",
+      "company_name": "Taiwan Semiconductor Manufacturing Co Ltd",
+      "sector": "Information technology",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 102,
+          "ticker": "TSM",
+          "actor": "Rep. Cleo Fields (D-LA)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-09T00:00:00Z",
+          "disclosure_date": "2026-04-21T13:01:34Z",
+          "collected_at": "2026-04-21T21:30:25.241076Z",
+          "disclosure_lag_days": 12,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": null
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-04-21T21:30:35.174898Z",
+          "current_price": 366.239990234375,
+          "n_simulations": 10000,
+          "annual_volatility": 0.4072,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 326.0,
+              "p25": 349.59,
+              "p50": 378.77,
+              "p75": 409.15,
+              "p90": 438.08
+            },
+            {
+              "days": 90,
+              "p10": 311.02,
+              "p25": 351.32,
+              "p50": 403.29,
+              "p75": 461.63,
+              "p90": 522.1
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-04-21T21:30:35.174898Z",
+          "current_vol_annual": 0.3959,
+          "historical_vol_20d": 0.4537,
+          "forecast_5d_vol": 0.4012,
+          "forecast_20d_vol": 0.403,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 343
+        },
+        "hmm": {
+          "run_date": "2026-04-21T21:30:35.174898Z",
+          "current_state": "sideways",
+          "prob_bull": 0.0,
+          "prob_bear": 0.3429,
+          "prob_sideways": 0.6571,
+          "n_observations": 343
+        },
+        "factors": {
+          "run_date": "2026-04-21T21:30:35.174898Z",
+          "beta_market": -0.144,
+          "beta_smb": 0.3707,
+          "beta_hml": -0.4071,
+          "beta_rmw": -0.0542,
+          "beta_cma": -0.2083,
+          "r_squared": 0.0257
+        },
+        "copula": {
+          "run_date": "2026-04-21T21:30:40.818608Z",
+          "n_observations": 343,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": 0.0121
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-04-21T21:30:35.174898Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-04-21T21:30:35.174898Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-04-21T21:30:35.174898Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-04-21T21:30:35.174898Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-04-21T21:30:40.818608Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "NEE",
+      "company_name": "NextEra Energy Inc",
+      "sector": "Utilities",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 54,
+          "ticker": "NEE",
+          "actor": "Rep. Richard Larsen (D-WA)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-07T00:00:00Z",
+          "disclosure_date": "2026-04-16T13:05:02Z",
+          "collected_at": "2026-04-16T21:30:35.512011Z",
+          "disclosure_lag_days": 9,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": null
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-04-16T21:30:54.201199Z",
+          "current_price": 91.23999786376953,
+          "n_simulations": 10000,
+          "annual_volatility": 0.26,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 83.83,
+              "p25": 87.6,
+              "p50": 91.93,
+              "p75": 96.68,
+              "p90": 101.35
+            },
+            {
+              "days": 90,
+              "p10": 79.24,
+              "p25": 85.67,
+              "p50": 93.48,
+              "p75": 101.91,
+              "p90": 110.5
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-04-16T21:30:54.201199Z",
+          "current_vol_annual": 0.2495,
+          "historical_vol_20d": 0.1841,
+          "forecast_5d_vol": 0.2643,
+          "forecast_20d_vol": 0.2673,
+          "forecast_20d_interpretation": "volatility_expanding",
+          "n_observations": 342
+        },
+        "hmm": {
+          "run_date": "2026-04-16T21:30:54.201199Z",
+          "current_state": "bull",
+          "prob_bull": 1.0,
+          "prob_bear": 0.0,
+          "prob_sideways": null,
+          "n_observations": 342
+        },
+        "factors": {
+          "run_date": "2026-04-16T21:30:54.201199Z",
+          "beta_market": 0.1274,
+          "beta_smb": 0.0284,
+          "beta_hml": 0.1361,
+          "beta_rmw": 0.1529,
+          "beta_cma": 0.0,
+          "r_squared": 0.0121
+        },
+        "copula": {
+          "run_date": "2026-04-16T21:31:14.077493Z",
+          "n_observations": 342,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": 0.0451
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-04-16T21:30:54.201199Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-04-16T21:30:54.201199Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-04-16T21:30:54.201199Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-04-16T21:30:54.201199Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-04-16T21:31:14.077493Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "GEHC",
+      "company_name": "GE HEALTHCARE TECHNOLOGI INC",
+      "sector": "Health care",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 25,
+          "ticker": "GEHC",
+          "actor": "Rep. Warren Davidson (R-OH)",
+          "direction": "sell",
+          "transaction_type": "sell",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-03-23T00:00:00Z",
+          "disclosure_date": "2026-03-26T13:05:01Z",
+          "collected_at": "2026-03-30T12:07:00.820399Z",
+          "disclosure_lag_days": 3,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": null
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-03-31T02:31:07.756864Z",
+          "current_price": 69.2300033569336,
+          "n_simulations": 10000,
+          "annual_volatility": 0.3498,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 59.63,
+              "p25": 63.48,
+              "p50": 67.91,
+              "p75": 72.66,
+              "p90": 77.47
+            },
+            {
+              "days": 90,
+              "p10": 52.39,
+              "p25": 58.35,
+              "p50": 65.48,
+              "p75": 73.82,
+              "p90": 82.19
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-03-31T02:31:07.756864Z",
+          "current_vol_annual": 0.3004,
+          "historical_vol_20d": 0.3555,
+          "forecast_5d_vol": 0.3296,
+          "forecast_20d_vol": 0.3314,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 343
+        },
+        "hmm": {
+          "run_date": "2026-03-31T02:31:07.756864Z",
+          "current_state": "sideways",
+          "prob_bull": 0.0,
+          "prob_bear": 0.0031,
+          "prob_sideways": 0.9969,
+          "n_observations": 343
+        },
+        "factors": null,
+        "copula": null
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-03-31T02:31:07.756864Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-03-31T02:31:07.756864Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-03-31T02:31:07.756864Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": false,
+          "as_of": null,
+          "note": "Unavailable in this snapshot."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": false,
+          "as_of": null,
+          "note": "Unavailable in this snapshot."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "GS",
+      "company_name": "The Goldman Sachs Group Inc",
+      "sector": "Financials",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 104,
+          "ticker": "GS",
+          "actor": "Rep. Kevin Hern (R-OK)",
+          "direction": "sell",
+          "transaction_type": "sell",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-29T00:00:00Z",
+          "disclosure_date": "2026-05-06T13:05:02Z",
+          "collected_at": "2026-05-06T21:30:39.588590Z",
+          "disclosure_lag_days": 7,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": "joint"
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-05-06T21:30:52.758308Z",
+          "current_price": 918.8900146484375,
+          "n_simulations": 10000,
+          "annual_volatility": 0.3152,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 844.08,
+              "p25": 890.2,
+              "p50": 947.12,
+              "p75": 1005.87,
+              "p90": 1062.07
+            },
+            {
+              "days": 90,
+              "p10": 817.84,
+              "p25": 902.82,
+              "p50": 1003.84,
+              "p75": 1112.15,
+              "p90": 1221.31
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-05-06T21:30:52.758308Z",
+          "current_vol_annual": 0.3008,
+          "historical_vol_20d": 0.2879,
+          "forecast_5d_vol": 0.3066,
+          "forecast_20d_vol": 0.3105,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 343
+        },
+        "hmm": {
+          "run_date": "2026-05-06T21:30:52.758308Z",
+          "current_state": "bull",
+          "prob_bull": 0.9965,
+          "prob_bear": 0.0035,
+          "prob_sideways": null,
+          "n_observations": 343
+        },
+        "factors": {
+          "run_date": "2026-05-06T21:30:52.758308Z",
+          "beta_market": 0.0025,
+          "beta_smb": -0.3001,
+          "beta_hml": 0.0704,
+          "beta_rmw": -0.678,
+          "beta_cma": 0.0262,
+          "r_squared": 0.053
+        },
+        "copula": {
+          "run_date": "2026-05-06T21:31:04.478552Z",
+          "n_observations": 343,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": -0.0137
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-05-06T21:30:52.758308Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-05-06T21:30:52.758308Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-05-06T21:30:52.758308Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-05-06T21:30:52.758308Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-05-06T21:31:04.478552Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "MAR",
+      "company_name": "Marriott International Inc",
+      "sector": "Consumer discretionary",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 48,
+          "ticker": "MAR",
+          "actor": "Rep. William Steube (R-FL)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-08T00:00:00Z",
+          "disclosure_date": "2026-04-15T13:01:48Z",
+          "collected_at": "2026-04-16T21:30:35.509274Z",
+          "disclosure_lag_days": 7,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": "spouse"
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-05-14T11:00:53.284334Z",
+          "current_price": 350.19000244140625,
+          "n_simulations": 10000,
+          "annual_volatility": 0.2913,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 317.24,
+              "p25": 333.65,
+              "p50": 353.6,
+              "p75": 373.18,
+              "p90": 392.87
+            },
+            {
+              "days": 90,
+              "p10": 299.55,
+              "p25": 326.13,
+              "p50": 359.43,
+              "p75": 397.13,
+              "p90": 433.88
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-05-14T11:00:53.284334Z",
+          "current_vol_annual": 0.2854,
+          "historical_vol_20d": 0.2629,
+          "forecast_5d_vol": 0.288,
+          "forecast_20d_vol": 0.2931,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 344
+        },
+        "hmm": {
+          "run_date": "2026-05-14T11:00:53.284334Z",
+          "current_state": "bear",
+          "prob_bull": 0.0005,
+          "prob_bear": 0.9995,
+          "prob_sideways": null,
+          "n_observations": 344
+        },
+        "factors": {
+          "run_date": "2026-05-14T11:00:53.284334Z",
+          "beta_market": 0.026,
+          "beta_smb": -0.2766,
+          "beta_hml": 0.015,
+          "beta_rmw": -0.1496,
+          "beta_cma": 0.3699,
+          "r_squared": 0.0134
+        },
+        "copula": {
+          "run_date": "2026-05-14T11:01:11.575481Z",
+          "n_observations": 344,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": 0.0557
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-05-14T11:00:53.284334Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-05-14T11:00:53.284334Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-05-14T11:00:53.284334Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-05-14T11:00:53.284334Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-05-14T11:01:11.575481Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    },
+    {
+      "ticker": "AESI",
+      "company_name": "ATLAS ENERGY SOLUTIONS INC",
+      "sector": "Energy",
+      "identity_source": "Issuer name and sector from the matching saved congressional source payload; enrichment joins excluded.",
+      "events": [
+        {
+          "id": 115,
+          "ticker": "AESI",
+          "actor": "Rep. Charles Roy (R-TX)",
+          "direction": "buy",
+          "transaction_type": "buy",
+          "direction_note": "Direction reported by the disclosure provider. This may concern assets owned by a spouse; it does not establish the reason for a trade.",
+          "trade_date": "2026-04-30T00:00:00Z",
+          "disclosure_date": "2026-05-11T13:05:06Z",
+          "collected_at": "2026-05-11T21:30:45.949683Z",
+          "disclosure_lag_days": 11,
+          "source_type": "congressional",
+          "source_label": "Capitol Trades — saved congressional disclosure",
+          "source_url": null,
+          "source_portal_url": "https://www.capitoltrades.com/trades",
+          "source_note": "Provider portal, not a direct filing link. The original disclosure URL was not retained in the saved record.",
+          "size_lower": null,
+          "size_upper": null,
+          "size_note": "Original filing amount range unavailable. The saved provider value is not presented as an exact trade amount.",
+          "owner": "spouse"
+        }
+      ],
+      "analysis": {
+        "monte_carlo": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_price": 18.709999084472656,
+          "n_simulations": 10000,
+          "annual_volatility": 0.5953,
+          "horizons": [
+            {
+              "days": 30,
+              "p10": 14.78,
+              "p25": 16.31,
+              "p50": 18.31,
+              "p75": 20.54,
+              "p90": 22.68
+            },
+            {
+              "days": 90,
+              "p10": 11.99,
+              "p25": 14.36,
+              "p50": 17.52,
+              "p75": 21.4,
+              "p90": 25.62
+            }
+          ],
+          "note": "Saved simulation price quantiles in USD. Baseline is the model input price at run time; this is not a price-history chart or a validated forecast."
+        },
+        "garch": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_vol_annual": 0.6182,
+          "historical_vol_20d": 0.5268,
+          "forecast_5d_vol": 0.6182,
+          "forecast_20d_vol": 0.6182,
+          "forecast_20d_interpretation": "volatility_stable",
+          "n_observations": 343
+        },
+        "hmm": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "current_state": "bull",
+          "prob_bull": 0.9962,
+          "prob_bear": 0.0038,
+          "prob_sideways": null,
+          "n_observations": 343
+        },
+        "factors": {
+          "run_date": "2026-05-11T21:30:58.381868Z",
+          "beta_market": -0.1828,
+          "beta_smb": 0.3213,
+          "beta_hml": -0.1683,
+          "beta_rmw": 0.5825,
+          "beta_cma": -0.085,
+          "r_squared": 0.0128
+        },
+        "copula": {
+          "run_date": "2026-05-11T21:31:17.760807Z",
+          "n_observations": 343,
+          "tail_dep_lower": 0.0,
+          "tail_dep_upper": 0.0,
+          "student_t_rho": -0.0333
+        }
+      },
+      "availability": [
+        {
+          "key": "monte_carlo",
+          "label": "Price simulations",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "garch",
+          "label": "Volatility estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "hmm",
+          "label": "Market regime estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "factors",
+          "label": "Factor exposures",
+          "available": true,
+          "as_of": "2026-05-11T21:30:58.381868Z",
+          "note": "Saved experimental model output."
+        },
+        {
+          "key": "copula",
+          "label": "Shared downside estimate",
+          "available": true,
+          "as_of": "2026-05-11T21:31:17.760807Z",
+          "note": "Saved experimental model output."
+        }
+      ],
+      "price_history": {
+        "available": false,
+        "points": [],
+        "note": "No local historical price series is stored. Simulations are shown separately and are not observed prices."
+      },
+      "limitations": [
+        "Model coverage counts stored components, not prediction confidence.",
+        "Disclosure publication dates can be later than transaction dates."
+      ]
+    }
+  ],
+  "macro": {
+    "as_of": "2026-06-03T11:01:03.328341Z",
+    "regime": "transition",
+    "indicators": [
+      {
+        "key": "yield_spread_10y2y",
+        "label": "10-year minus 2-year yield",
+        "value": 0.41,
+        "unit": "percentage points",
+        "as_of": "2026-06-03T11:01:03.328341Z",
+        "source_url": "https://fred.stlouisfed.org/series/T10Y2Y",
+        "note": "Saved pipeline snapshot date; source observation and release dates were not retained."
+      },
+      {
+        "key": "unemployment_claims",
+        "label": "Initial unemployment claims",
+        "value": 215000.0,
+        "unit": "claims",
+        "as_of": "2026-06-03T11:01:03.328341Z",
+        "source_url": "https://fred.stlouisfed.org/series/ICSA",
+        "note": "Saved pipeline snapshot date; source observation and release dates were not retained."
+      },
+      {
+        "key": "fed_funds_rate",
+        "label": "Federal funds rate",
+        "value": 3.63,
+        "unit": "%",
+        "as_of": "2026-06-03T11:01:03.328341Z",
+        "source_url": "https://fred.stlouisfed.org/series/FEDFUNDS",
+        "note": "Saved pipeline snapshot date; source observation and release dates were not retained."
+      },
+      {
+        "key": "cpi_yoy",
+        "label": "Consumer price inflation",
+        "value": null,
+        "unit": "% year over year",
+        "as_of": "2026-06-03T11:01:03.328341Z",
+        "source_url": "https://fred.stlouisfed.org/series/CPIAUCSL",
+        "note": "Saved pipeline snapshot date; source observation and release dates were not retained."
+      }
+    ],
+    "note": "Historical pipeline values. The regime is a rule-based research label; individual indicator observation dates may be older than this snapshot."
+  },
+  "validation": {
+    "generated_at": "2026-06-22T14:31:05.208577Z",
+    "status": "experimental",
+    "passed": 3,
+    "total": 7,
+    "gates": [
+      {
+        "key": "minimum_20d_samples",
+        "label": "Minimum historical sample count",
+        "passed": true
+      },
+      {
+        "key": "ensemble_rank_ic_positive",
+        "label": "Positive ensemble rank correlation",
+        "passed": true
+      },
+      {
+        "key": "conviction_rank_ic_positive",
+        "label": "Positive conviction rank correlation",
+        "passed": false
+      },
+      {
+        "key": "buy_bucket_beats_hold",
+        "label": "Buy-labelled group exceeds hold-labelled group",
+        "passed": true
+      },
+      {
+        "key": "sell_bucket_positive",
+        "label": "Sell-labelled group has positive directional returns",
+        "passed": false
+      },
+      {
+        "key": "high_conviction_beats_other",
+        "label": "Higher-conviction group exceeds other events",
+        "passed": false
+      },
+      {
+        "key": "all_claimed_components_present",
+        "label": "All claimed components are present",
+        "passed": false
+      }
+    ],
+    "table_counts": {
+      "events": 202,
+      "enrichments": 189,
+      "conviction_scores": 189,
+      "ensemble_scores": 492,
+      "performance": 202,
+      "monte_carlo": 386,
+      "hmm": 353,
+      "garch": 350,
+      "fama_french": 373,
+      "copula_tail": 369,
+      "event_study": 0,
+      "bayesian_decay": 0,
+      "options_flow": 322,
+      "news_sentiment": 0,
+      "mean_variance": 27
+    },
+    "xgboost_status": "not_trained",
+    "caveats": [
+      "This is the saved project audit, not a new validation run. Its counts describe the full research database, not the selected demo universe.",
+      "Historical evaluation uses latest scores and may include information unavailable at entry time; missing-provider returns and horizon conventions also require correction.",
+      "Passing a gate does not establish predictive accuracy or investment performance. Return, win-rate, Sharpe, and recommendation claims are excluded from this demo."
+    ]
+  }
+}

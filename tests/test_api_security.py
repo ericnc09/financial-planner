@@ -2,19 +2,61 @@
 
 These encode the hardening guarantees: input validation on tickers and
 backtest dates, admin gating, and CSV formula-injection neutralization.
-They run against whatever DB settings point at (empty is fine).
+They run against an isolated temporary database, with admin actions disabled.
 """
+
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.api import app
+from config.settings import Settings
+from src.api import api
+from src.models.database import MeanVarianceResult
 
 
 @pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+def client(tmp_path_factory):
+    database_url = f"sqlite:///{tmp_path_factory.mktemp('api') / 'api.db'}"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("DATABASE_URL", database_url)
+        patch.setenv("ADMIN_API_TOKEN", "")
+        patch.setenv("SENTRY_DSN", "")
+        patch.setattr(api, "settings", Settings(_env_file=None))
+        with TestClient(api.app) as c:
+            yield c
+        api.app.state.session_factory.kw["bind"].dispose()
+
+
+def test_mean_variance_route_returns_latest_portfolio(client):
+    with api.app.state.session_factory() as session:
+        session.add_all([
+            MeanVarianceResult(
+                run_date=datetime(2026, 6, day),
+                n_assets=2,
+                tickers='["AAPL", "MSFT"]',
+                ms_weights='{"AAPL": 0.6, "MSFT": 0.4}',
+                ms_return=0.12,
+                ms_volatility=0.20,
+                ms_sharpe=0.4,
+                mv_weights='{"AAPL": 0.5, "MSFT": 0.5}',
+            )
+            for day in (1, 2)
+        ])
+        session.commit()
+
+    response = client.get("/api/analysis/mean-variance")
+
+    assert response.status_code == 200
+    portfolio = response.json()
+    assert portfolio["run_date"] == "2026-06-02T00:00:00"
+    assert portfolio["tickers"] == ["AAPL", "MSFT"]
+    assert portfolio["n_assets"] == 2
+    assert portfolio["max_sharpe"]["weights"] == {"AAPL": 0.6, "MSFT": 0.4}
+    # The literal portfolio route must not change ordinary ticker routing.
+    ticker_response = client.get("/api/analysis/aapl")
+    assert ticker_response.status_code == 200
+    assert ticker_response.json()["ticker"] == "AAPL"
 
 
 def test_health(client):

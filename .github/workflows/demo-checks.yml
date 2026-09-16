@@ -1,0 +1,54 @@
+name: Demo checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate the published snapshot
+        run: python scripts/export_demo_snapshot.py --help && python scripts/check_demo_release.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix dashboard
+      - name: Build the standalone demo
+        run: npm run --prefix dashboard build
+      - name: Check production artifact
+        run: python scripts/check_demo_release.py --dist dashboard/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finalyse-demo
+          path: dashboard/dist
+          retention-days: 14
+
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ADMIN_API_TOKEN: ''
+      SENTRY_DSN: ''
+      SLACK_WEBHOOK_URL: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: pip install -r requirements-lock.txt
+      - run: python -m pytest -q

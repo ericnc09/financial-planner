@@ -1,4 +1,40 @@
-# Financial Market Analyzer
+# finAlyse — explainable equity research
+
+An interactive research prototype exploring public trading disclosures, saved
+model context, and the limits of financial evidence. Built by Eric Costa.
+
+The public-facing demo uses **8 companies and 9 congressional disclosures** from
+a reviewed historical snapshot with a **June 22, 2026 cutoff**. Original event
+and model dates remain visible. It includes search, transaction/date filters,
+disclosure timelines, saved simulation quantiles, model availability, and an
+integrated product case study. No account, API key, or running backend is needed.
+
+### Try the demo locally
+
+```bash
+cd dashboard
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite. `npm run build` produces the standalone
+deployment in `dashboard/dist`. For the original API-backed research dashboard,
+use `npm run dev:live` with FastAPI running.
+
+- [Product case study](docs/FINTECH_PM_CASE_STUDY.md)
+- [Deployment and snapshot release guide](docs/DEMO_DEPLOYMENT.md)
+- [Project review and priorities](docs/FINTECH_PM_DEMO_REVIEW.md)
+
+**Evidence boundaries:** the demo contains real saved records, but is not a live
+stock picker or a validated investment strategy. Original filing links and
+verified amounts are unavailable for these records; links lead to the source
+portal. Some models are absent, and historical return evaluation still has
+unresolved timing and data-quality issues. No usability study or adoption results
+are claimed. The research audit below preserves those limitations.
+
+---
+
+## Research system
 
 Research system for market, ticker, signal, and portfolio analysis.
 

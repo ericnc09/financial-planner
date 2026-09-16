@@ -723,6 +723,35 @@ def get_macro_history(days: int = Query(default=90, ge=1, le=365)):
         session.close()
 
 
+# Register this literal path before /api/analysis/{ticker}.
+@app.get("/api/analysis/mean-variance", response_model=MeanVarianceResponse | None)
+def get_mean_variance():
+    """Get latest mean-variance portfolio optimization."""
+    import json as _json
+    session = app.state.session_factory()
+    try:
+        row = session.query(MeanVarianceResult).order_by(
+            desc(MeanVarianceResult.run_date)
+        ).first()
+        if not row:
+            return None
+        return MeanVarianceResponse(
+            run_date=row.run_date,
+            n_assets=row.n_assets,
+            tickers=_json.loads(row.tickers),
+            max_sharpe={"weights": _json.loads(row.ms_weights), "expected_return": row.ms_return,
+                        "volatility": row.ms_volatility, "sharpe_ratio": row.ms_sharpe},
+            min_variance={"weights": _json.loads(row.mv_weights), "expected_return": row.mv_return,
+                          "volatility": row.mv_volatility},
+            equal_weight={"expected_return": row.ew_return, "volatility": row.ew_volatility,
+                          "sharpe_ratio": row.ew_sharpe},
+            efficient_frontier=_json.loads(row.efficient_frontier) if row.efficient_frontier else [],
+            risk_contribution=_json.loads(row.risk_contribution) if row.risk_contribution else {},
+        )
+    finally:
+        session.close()
+
+
 @app.get("/api/analysis/{ticker}", response_model=TickerAnalysisResponse)
 def get_ticker_analysis(ticker: str):
     """Get all analysis model results for a ticker."""
@@ -1127,34 +1156,6 @@ def get_event_study_summary():
             win_rate_20d=agg_20d.get("win_rate"),
             by_direction=by_dir,
             by_source=by_src,
-        )
-    finally:
-        session.close()
-
-
-@app.get("/api/analysis/mean-variance", response_model=MeanVarianceResponse | None)
-def get_mean_variance():
-    """Get latest mean-variance portfolio optimization."""
-    import json as _json
-    session = app.state.session_factory()
-    try:
-        row = session.query(MeanVarianceResult).order_by(
-            desc(MeanVarianceResult.run_date)
-        ).first()
-        if not row:
-            return None
-        return MeanVarianceResponse(
-            run_date=row.run_date,
-            n_assets=row.n_assets,
-            tickers=_json.loads(row.tickers),
-            max_sharpe={"weights": _json.loads(row.ms_weights), "expected_return": row.ms_return,
-                        "volatility": row.ms_volatility, "sharpe_ratio": row.ms_sharpe},
-            min_variance={"weights": _json.loads(row.mv_weights), "expected_return": row.mv_return,
-                          "volatility": row.mv_volatility},
-            equal_weight={"expected_return": row.ew_return, "volatility": row.ew_volatility,
-                          "sharpe_ratio": row.ew_sharpe},
-            efficient_frontier=_json.loads(row.efficient_frontier) if row.efficient_frontier else [],
-            risk_contribution=_json.loads(row.risk_contribution) if row.risk_contribution else {},
         )
     finally:
         session.close()
