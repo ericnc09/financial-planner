@@ -9,7 +9,7 @@ APScheduler==3.11.2
 arch==8.0.0
 async-timeout==5.0.1
 attrs==26.1.0
-backports.asyncio.runner==1.2.0
+backports.asyncio.runner==1.2.0; python_version < "3.11"
 beautifulsoup4==4.14.3
 certifi==2026.2.25
 cffi==2.0.0
