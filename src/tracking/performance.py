@@ -28,6 +28,10 @@ logger = structlog.get_logger()
 class PerformanceTracker:
     # Transaction costs: 10bps slippage + 5bps commission per side = 30bps round-trip
     COST_PER_TRADE = 0.0030
+    # Yahoo returns None both for delisted tickers and for transient failures
+    # (rate limits, network), so retry before booking a -100% delisted loss.
+    PRICE_FETCH_ATTEMPTS = 3
+    PRICE_RETRY_DELAY_S = 2.0
 
     def __init__(self, session_factory):
         self.session_factory = session_factory
@@ -54,26 +58,35 @@ class PerformanceTracker:
 
         updated = 0
         for ticker, evts in ticker_events.items():
+            # Delisted placeholders (entry_price 0) are re-checked every run so
+            # a mistaken -100% heals once prices are available again.
+            pending = [
+                evt for evt in evts
+                if (perf := existing.get(evt.id)) is None
+                or perf.return_60d is None
+                or perf.entry_price == 0
+            ]
+            if not pending:
+                continue
             try:
-                price_data = await self.yahoo.get_price_history(ticker, days=504)
+                price_data = await self._fetch_prices(ticker)
 
-                for evt in evts:
+                for evt in pending:
                     perf = existing.get(evt.id)
-                    needs_update = (
-                        perf is None or
-                        perf.return_60d is None
-                    )
-                    if not needs_update:
-                        continue
 
                     if price_data is None:
-                        # No price data — likely delisted/bankrupt.
-                        # Mark as total loss to prevent survivorship bias,
-                        # but only if event is old enough that data SHOULD exist.
+                        # No price data after retries — likely delisted/bankrupt.
+                        # Mark as total loss to prevent survivorship bias, but only
+                        # for events with nothing measured yet (never overwrite
+                        # realized returns) and old enough that data SHOULD exist.
+                        if perf is not None:
+                            if perf.entry_price != 0:
+                                logger.warning("performance.price_unavailable", ticker=ticker, event_id=evt.id)
+                            continue
                         days_since = (datetime.utcnow() - evt.trade_date).days
                         if days_since > 10:
                             result = self._delisted_loss(evt)
-                            self._persist(evt, result, existing.get(evt.id))
+                            self._persist(evt, result, None)
                             updated += 1
                             logger.info("performance.delisted_loss", ticker=ticker, event_id=evt.id)
                         continue
@@ -94,6 +107,16 @@ class PerformanceTracker:
         logger.info("performance.done", updated=updated)
         await self.yahoo.close()
         return updated
+
+    async def _fetch_prices(self, ticker: str) -> dict | None:
+        for attempt in range(self.PRICE_FETCH_ATTEMPTS):
+            price_data = await self.yahoo.get_price_history(ticker, days=504)
+            if price_data is not None:
+                return price_data
+            if attempt < self.PRICE_FETCH_ATTEMPTS - 1:
+                await asyncio.sleep(self.PRICE_RETRY_DELAY_S * (attempt + 1))
+        logger.info("performance.no_price_data", ticker=ticker, attempts=self.PRICE_FETCH_ATTEMPTS)
+        return None
 
     def _delisted_loss(self, event) -> dict:
         """Return -100% for all horizons when ticker has no price data (delisted/bankrupt)."""
@@ -180,8 +203,13 @@ class PerformanceTracker:
                     SignalPerformance.event_id == event.id
                 ).first()
                 if row:
+                    # A delisted placeholder is replaced wholesale once real
+                    # prices exist, including entry and still-maturing horizons.
+                    replacing_placeholder = row.entry_price == 0
                     for key, val in result.items():
-                        if val is not None and key not in ("entry_price", "entry_date"):
+                        if replacing_placeholder or (
+                            val is not None and key not in ("entry_price", "entry_date")
+                        ):
                             setattr(row, key, val)
                     row.updated_at = datetime.utcnow()
                     session.commit()

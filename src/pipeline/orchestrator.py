@@ -200,7 +200,10 @@ class Orchestrator:
         await self._run_copula_analysis(unique_tickers)
 
         # --- Step 3e: MEAN-VARIANCE OPTIMIZATION ---
-        await self._run_mean_variance(unique_tickers)
+        try:
+            await self._run_mean_variance(unique_tickers)
+        except Exception as e:
+            logger.warning("orchestrator.meanvar_failed", error=str(e))
 
         # --- Step 3f: EVENT STUDY + BAYESIAN DECAY ---
         await self._run_event_studies(new_events)
@@ -879,9 +882,15 @@ class Orchestrator:
         for ticker in tickers:
             try:
                 price_data = await self.yahoo.get_price_history(ticker, days=252)
-                if price_data and len(price_data["returns"]) >= 30:
-                    valid_tickers.append(ticker)
-                    returns_list.append(price_data["returns"])
+                if not price_data or len(price_data["returns"]) < 30:
+                    continue
+                # NaN/zero closes yield non-finite log returns, which make
+                # LedoitWolf raise and would sink the whole optimization.
+                if not np.all(np.isfinite(price_data["returns"])):
+                    logger.warning("orchestrator.meanvar_nonfinite_returns", ticker=ticker)
+                    continue
+                valid_tickers.append(ticker)
+                returns_list.append(price_data["returns"])
             except Exception as e:
                 logger.warning("orchestrator.meanvar_data_failed", ticker=ticker, error=str(e))
 

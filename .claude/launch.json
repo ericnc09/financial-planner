@@ -3,16 +3,23 @@
   "configurations": [
     {
       "name": "api",
-      "runtimeExecutable": "/Users/eric/miniconda3/bin/python3",
+      "runtimeExecutable": "/Users/eric/financial-planner/.venv313/bin/python",
       "runtimeArgs": ["-m", "uvicorn", "src.api.api:app", "--port", "8000"],
       "port": 8000,
       "cwd": "/Users/eric/financial-planner"
     },
     {
       "name": "dashboard",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": ["/Users/eric/financial-planner/dashboard/start.sh"],
+      "runtimeExecutable": "/Users/eric/.nvm/versions/node/v24.15.0/bin/npx",
+      "runtimeArgs": ["vite", "--port", "5173", "--strictPort"],
       "port": 5173,
+      "cwd": "/Users/eric/financial-planner/dashboard"
+    },
+    {
+      "name": "dashboard-live",
+      "runtimeExecutable": "/Users/eric/.nvm/versions/node/v24.15.0/bin/npx",
+      "runtimeArgs": ["vite", "--mode", "live", "--port", "5174", "--strictPort"],
+      "port": 5174,
       "cwd": "/Users/eric/financial-planner/dashboard"
     }
   ]

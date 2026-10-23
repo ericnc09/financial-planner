@@ -16,3 +16,4 @@ dashboard/dist/
 *.log
 reports/cache/
 .pytest_cache/
+.venv*/
