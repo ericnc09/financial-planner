@@ -17,3 +17,4 @@ dashboard/dist/
 reports/cache/
 .pytest_cache/
 .venv*/
+docs/talks/
