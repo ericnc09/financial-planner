@@ -1,5 +1,6 @@
 """
-Run analysis on all tickers and post results to Slack via webhook.
+Run analysis on all tickers and post results to the configured alert channel
+(Slack webhook or WhatsApp).
 
 Usage:
     python scripts/analyze_and_notify.py [TICKER1 TICKER2 ...]
@@ -25,6 +26,7 @@ from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.copula_tail_risk import CopulaTailRisk
 from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.ticker_analysis import analyze_ticker
+from src.alerts.notifier import WhatsAppNotifier, create_notifier
 from src.slack_bot.formatter import format_results
 from config.settings import Settings
 
@@ -34,8 +36,13 @@ DEFAULT_TICKERS = ["RY", "CM", "TD", "BNS", "E", "VLO", "EPD", "ET", "SUN", "SLB
 
 async def run_and_notify(tickers: list[str]):
     settings = Settings()
+    notifier = create_notifier(settings)
+    use_whatsapp = isinstance(notifier, WhatsAppNotifier)
     webhook_url = settings.slack_webhook_url
-    if not webhook_url:
+    if use_whatsapp and not notifier.configured:
+        print("ERROR: WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_TO must be set in config/.env")
+        sys.exit(1)
+    if not use_whatsapp and not webhook_url:
         print("ERROR: SLACK_WEBHOOK_URL not set in config/.env")
         sys.exit(1)
 
@@ -80,6 +87,14 @@ async def run_and_notify(tickers: list[str]):
 
     if not results:
         print("\nNo results to send.")
+        return
+
+    if use_whatsapp:
+        print("\nSending to WhatsApp...")
+        title = f"Smart Money Analysis, {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        sent = await notifier.send_analysis_summary(title, results, failed)
+        await notifier.close()
+        print("WhatsApp message accepted." if sent else "WhatsApp send failed; see the log above.")
         return
 
     # Build Slack payload

@@ -54,7 +54,11 @@ jobs:
         env:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ALERT_CHANNEL: ${{ vars.ALERT_CHANNEL || 'slack' }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WHATSAPP_TO: ${{ secrets.WHATSAPP_TO }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
           DATABASE_URL: sqlite:///./smart_money.db

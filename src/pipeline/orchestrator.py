@@ -52,7 +52,7 @@ from src.models.database import (
     init_db,
 )
 from src.models.schemas import MacroRegime
-from src.alerts.notifier import SlackNotifier
+from src.alerts.notifier import SlackNotifier, WhatsAppNotifier, create_notifier
 from src.scoring.conviction_engine import ConvictionEngine
 from src.scoring.fundamental_scorer import FundamentalScorer
 from src.scoring.macro_scorer import MacroScorer
@@ -88,7 +88,7 @@ class Orchestrator:
         self.edgar_xbrl: EdgarXbrlClient | None = None
         self.edgar_13f: Edgar13FClient | None = None
         self.macro_extra: MacroExtraClient | None = None
-        self.notifier: SlackNotifier | None = None
+        self.notifier: SlackNotifier | WhatsAppNotifier | None = None
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
@@ -127,7 +127,7 @@ class Orchestrator:
         self.macro_extra = MacroExtraClient(getattr(self.settings, "bls_api_key", None))
 
         # Alerts
-        self.notifier = SlackNotifier(self.settings.slack_webhook_url)
+        self.notifier = create_notifier(self.settings)
 
         # Scoring
         signal_scorer = SignalScorer()
@@ -231,7 +231,7 @@ class Orchestrator:
             threshold=self.settings.conviction_threshold,
         )
 
-        # Log actionable signals + send Slack alerts
+        # Log actionable signals + send alerts
         for event, enrichment, result in passing:
             logger.info(
                 "orchestrator.actionable_signal",
@@ -1111,7 +1111,7 @@ class Orchestrator:
 
                 self._persist_ensemble(ticker, event_id, run_date, result)
 
-                # Slack alert for high-scoring ensemble signals
+                # Alert for high-scoring ensemble signals
                 if self.notifier and result.get("total_score", 0) > 70:
                     await self.notifier.send_ensemble_alert(
                         ticker=ticker,

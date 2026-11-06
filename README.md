@@ -171,7 +171,7 @@ Optional:
 - Finnhub API key for company news
 - Tiingo API key as price/enrichment fallback
 - BLS API key for higher quota
-- Slack webhook for alerts
+- Slack webhook or [WhatsApp Cloud API](docs/WHATSAPP_SETUP.md) for alerts
 - Sentry DSN for monitoring
 - Admin token for mutating API endpoints
 

@@ -31,7 +31,13 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
     # Alerts
+    alert_channel: Literal["slack", "whatsapp"] = "slack"
     slack_webhook_url: str | None = None
+
+    # WhatsApp Cloud API (used when alert_channel = "whatsapp")
+    whatsapp_token: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_to: str | None = None  # recipient in international format, digits only
 
     # Slack Bot (Socket Mode)
     slack_bot_token: str | None = None

@@ -31,6 +31,7 @@ from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.ticker_analysis import analyze_ticker
 from src.analysis.news_sentiment import NewsSentimentAnalyzer
 from src.clients.news import NewsClient
+from src.alerts.notifier import WhatsAppNotifier, create_notifier
 from src.slack_bot.formatter import format_results
 from config.settings import Settings
 
@@ -103,8 +104,13 @@ async def run():
     args = parser.parse_args()
 
     settings = Settings()
+    notifier = create_notifier(settings)
+    use_whatsapp = isinstance(notifier, WhatsAppNotifier)
     webhook_url = settings.slack_webhook_url
-    if not webhook_url:
+    if use_whatsapp and not notifier.configured:
+        print("ERROR: WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_TO must be set in config/.env")
+        sys.exit(1)
+    if not use_whatsapp and not webhook_url:
         print("ERROR: SLACK_WEBHOOK_URL not set in config/.env")
         sys.exit(1)
 
@@ -183,6 +189,17 @@ async def run():
     sells = [r for r in results if r["verdict"] == "SELL"]
     holds = [r for r in results if r["verdict"] == "HOLD"]
     print(f"VERDICT SUMMARY: {len(buys)} BUY  |  {len(holds)} HOLD  |  {len(sells)} SELL  |  {len(failed)} failed")
+
+    if use_whatsapp:
+        print("\nSending to WhatsApp...", end=" ", flush=True)
+        title = (
+            f"Insider + Congressional Signal Run, {datetime.now().strftime('%Y-%m-%d %H:%M')}: "
+            f"{len(all_events)} trades across {len(unique_tickers)} tickers (past {args.days}d)"
+        )
+        sent = await notifier.send_analysis_summary(title, results, failed)
+        await notifier.close()
+        print("accepted." if sent else "FAILED; see the log above.")
+        return
 
     # ── Step 3: Build Slack payload ────────────────────────────────────────
     payload = format_results(results, failed if failed else None)
