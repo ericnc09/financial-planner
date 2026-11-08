@@ -1,8 +1,9 @@
 """
 SEC EDGAR client for insider trading data (Form 3/4/5).
 
-Uses the EDGAR RSS feed (browse-edgar?output=atom) to discover recent Form 4 filings,
-then parses the raw XML for transaction details.
+Uses the EDGAR daily form indexes to list every Form 4 filed in the look-back
+window, then parses each filing's XML for transaction details. Each day's index
+is published after that day ends, so same-day filings arrive on the next run.
 
 Free, no API key. Requires User-Agent header and respects 10 req/s rate limit.
 """
@@ -11,7 +12,7 @@ import asyncio
 import json
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 import structlog
@@ -23,16 +24,21 @@ logger = structlog.get_logger()
 
 USER_AGENT = "SmartMoneyFollows research@smartmoneyfollows.dev"
 
-BUY_CODES = {"P", "M", "A", "J", "K", "I"}
-SELL_CODES = {"S", "D", "F", "G"}
+# Open-market transactions only. Awards, option exercises, gifts and tax
+# withholding don't reflect a decision to trade at the market price.
+BUY_CODES = {"P"}
+SELL_CODES = {"S"}
 
-ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+# Filers of unlisted companies put these in the trading symbol field
+PLACEHOLDER_TICKERS = {"NONE", "N/A", "NA"}
+
+ARCHIVES_URL = "https://www.sec.gov/Archives"
+MIN_REQUEST_INTERVAL = 0.125  # 8 req/s; SEC allows at most 10
+MAX_CONCURRENT_FILINGS = 8
 
 
 class EdgarClient:
-    """Fetches insider trades from SEC EDGAR Form 4 filings via RSS + XML parsing."""
-
-    RSS_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
+    """Fetches insider trades from SEC EDGAR Form 4 filings via daily index + XML parsing."""
 
     def __init__(self):
         self._client = httpx.AsyncClient(
@@ -43,86 +49,80 @@ class EdgarClient:
             timeout=30.0,
             follow_redirects=True,
         )
-        self._rate_limiter = asyncio.Semaphore(8)
+        self._slot_lock = asyncio.Lock()
+        self._next_slot = 0.0
+
+    async def _wait_for_request_slot(self):
+        """Space requests across all concurrent tasks to stay under SEC's limit."""
+        async with self._slot_lock:
+            now = asyncio.get_running_loop().time()
+            wait = self._next_slot - now
+            self._next_slot = max(now, self._next_slot) + MIN_REQUEST_INTERVAL
+        if wait > 0:
+            await asyncio.sleep(wait)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=15))
     async def _get(self, url: str, params: dict | None = None) -> httpx.Response:
-        async with self._rate_limiter:
-            await asyncio.sleep(0.12)  # ~8 req/s max
-            resp = await self._client.get(url, params=params)
-            if resp.status_code == 429:
-                await asyncio.sleep(5)
-                raise Exception("Rate limited by SEC")
-            resp.raise_for_status()
-            return resp
+        await self._wait_for_request_slot()
+        resp = await self._client.get(url, params=params)
+        if resp.status_code == 429:
+            await asyncio.sleep(5)
+            raise Exception("Rate limited by SEC")
+        resp.raise_for_status()
+        return resp
 
-    async def get_recent_form4_rss(self, count: int = 100) -> list[dict]:
-        """
-        Fetch recent Form 4 filings from EDGAR RSS (Atom) feed.
-        Returns list of {title, index_url, updated} dicts.
-        """
-        resp = await self._get(
-            self.RSS_URL,
-            params={
-                "action": "getcurrent",
-                "type": "4",
-                "owner": "include",
-                "count": str(count),
-                "output": "atom",
-            },
-        )
-        root = ET.fromstring(resp.text)
-        entries = root.findall("atom:entry", ATOM_NS)
-
-        filings = []
-        for entry in entries:
-            category = entry.find("atom:category", ATOM_NS)
-            if category is not None and category.get("term") != "4":
+    @staticmethod
+    def _parse_daily_index(text: str) -> dict[str, datetime]:
+        """Map each Form 4's archive path to its filing date."""
+        filings = {}
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) < 5 or parts[0] != "4":
                 continue
-
-            title = entry.find("atom:title", ATOM_NS)
-            link = entry.find("atom:link", ATOM_NS)
-            updated = entry.find("atom:updated", ATOM_NS)
-
-            if link is not None:
-                filings.append(
-                    {
-                        "title": title.text if title is not None else "",
-                        "index_url": link.get("href", ""),
-                        "updated": updated.text if updated is not None else "",
-                    }
-                )
-
-        logger.info("edgar.rss_form4", count=len(filings))
+            try:
+                filings[parts[-1]] = datetime.strptime(parts[-2], "%Y%m%d")
+            except ValueError:
+                continue
         return filings
 
-    async def _get_form4_xml_url(self, index_url: str) -> str | None:
-        """Parse a filing index page to find the raw Form 4 XML document URL."""
+    async def _get_daily_form4s(self, day: date) -> dict[str, datetime]:
+        """List one day's Form 4 filings. Days without an index yield nothing."""
+        quarter = (day.month - 1) // 3 + 1
+        url = (
+            f"{ARCHIVES_URL}/edgar/daily-index/{day.year}/QTR{quarter}/"
+            f"form.{day:%Y%m%d}.idx"
+        )
         try:
-            resp = await self._get(index_url)
-            # Find XML links that are NOT the xsl-rendered version
-            xml_links = re.findall(
-                r'href="(/Archives/edgar/data/[^"]+\.xml)"', resp.text
-            )
-            for link in xml_links:
-                if "xsl" not in link.lower():
-                    return f"https://www.sec.gov{link}"
-            # Fallback: take the last XML link (usually the raw one)
-            if xml_links:
-                return f"https://www.sec.gov{xml_links[-1]}"
+            resp = await self._get(url)
         except Exception as e:
-            logger.debug("edgar.index_parse_failed", url=index_url, error=str(e))
-        return None
+            # Expected for holidays and for today, whose index isn't out yet
+            logger.warning("edgar.daily_index_unavailable", day=str(day), error=str(e))
+            return {}
+        return self._parse_daily_index(resp.text)
 
-    async def _parse_form4_xml(self, xml_url: str) -> list[SmartMoneyEventSchema]:
-        """Parse a raw Form 4 XML document for transaction details."""
+    async def _get_filing_events(
+        self, path: str, filing_date: datetime
+    ) -> list[SmartMoneyEventSchema] | None:
+        """Fetch one filing and parse it. Returns None if it can't be fetched."""
         try:
-            resp = await self._get(xml_url)
-            content = resp.text
-            if "<ownershipDocument>" not in content:
+            resp = await self._get(f"{ARCHIVES_URL}/{path}")
+        except Exception as e:
+            logger.debug("edgar.filing_fetch_failed", path=path, error=str(e))
+            return None
+        return self._parse_form4_xml(resp.text, filing_date)
+
+    def _parse_form4_xml(
+        self, content: str, filing_date: datetime
+    ) -> list[SmartMoneyEventSchema]:
+        """Parse a Form 4 submission for transaction details."""
+        try:
+            document = re.search(
+                r"<ownershipDocument>.*</ownershipDocument>", content, re.DOTALL
+            )
+            if not document:
                 return []
 
-            root = ET.fromstring(content)
+            root = ET.fromstring(document.group(0))
             events = []
 
             # Issuer info
@@ -132,7 +132,7 @@ class EdgarClient:
                 ticker_elem = issuer.find("issuerTradingSymbol")
                 if ticker_elem is not None and ticker_elem.text:
                     ticker = ticker_elem.text.strip().upper()
-            if not ticker or len(ticker) > 10:
+            if not ticker or len(ticker) > 10 or ticker in PLACEHOLDER_TICKERS:
                 return []
 
             # Reporting owner
@@ -148,17 +148,6 @@ class EdgarClient:
                     owner_title = title_elem.text.strip()
 
             actor = f"{owner_name} ({owner_title})" if owner_title else owner_name
-
-            # Period of report (filing date)
-            period_elem = root.find("periodOfReport")
-            filing_date = datetime.utcnow()
-            if period_elem is not None and period_elem.text:
-                try:
-                    filing_date = datetime.strptime(
-                        period_elem.text.strip(), "%Y-%m-%d"
-                    )
-                except ValueError:
-                    pass
 
             # Parse non-derivative transactions
             for tx in root.findall(".//nonDerivativeTransaction"):
@@ -177,7 +166,7 @@ class EdgarClient:
         except ET.ParseError:
             return []
         except Exception as e:
-            logger.debug("edgar.form4_parse_failed", url=xml_url, error=str(e))
+            logger.debug("edgar.form4_parse_failed", error=str(e))
             return []
 
     def _parse_transaction(
@@ -261,28 +250,27 @@ class EdgarClient:
         self, since_days: int = 14
     ) -> list[SmartMoneyEventSchema]:
         """
-        Get recent insider trades by:
-        1. Fetching Form 4 RSS feed for latest filings
-        2. For each filing, finding the raw XML URL
-        3. Parsing each XML for transaction details
+        Get insider trades from every Form 4 filed in the last since_days:
+        1. Listing filings from the EDGAR daily form indexes
+        2. Fetching each filing
+        3. Parsing its XML for open-market transactions
         """
-        cutoff = datetime.utcnow() - timedelta(days=since_days)
-        filings = await self.get_recent_form4_rss(count=100)
+        today = datetime.utcnow().date()
+        days = [today - timedelta(days=n) for n in range(since_days + 1)]
+        indexes = await asyncio.gather(
+            *(self._get_daily_form4s(d) for d in days if d.weekday() < 5)
+        )
+        filings = {path: filed for index in indexes for path, filed in index.items()}
 
-        all_events = []
-        for filing in filings:
-            index_url = filing.get("index_url")
-            if not index_url:
-                continue
+        limit = asyncio.Semaphore(MAX_CONCURRENT_FILINGS)
 
-            xml_url = await self._get_form4_xml_url(index_url)
-            if not xml_url:
-                continue
+        async def fetch(path: str, filed: datetime):
+            async with limit:
+                return await self._get_filing_events(path, filed)
 
-            events = await self._parse_form4_xml(xml_url)
-            for e in events:
-                if e.trade_date >= cutoff:
-                    all_events.append(e)
+        results = await asyncio.gather(*(fetch(p, f) for p, f in filings.items()))
+        all_events = [e for events in results if events for e in events]
+        failed = sum(1 for events in results if events is None)
 
         # Deduplicate
         seen = set()
@@ -294,7 +282,12 @@ class EdgarClient:
                 deduped.append(e)
 
         deduped.sort(key=lambda e: e.trade_date, reverse=True)
-        logger.info("edgar.bulk_insider_trades", total=len(deduped))
+        logger.info(
+            "edgar.bulk_insider_trades",
+            total=len(deduped),
+            filings=len(filings),
+            failed=failed,
+        )
         return deduped
 
     async def close(self):
