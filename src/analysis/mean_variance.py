@@ -16,6 +16,9 @@ from sklearn.covariance import LedoitWolf
 
 logger = structlog.get_logger()
 
+# Above this the covariance is numerically singular for the optimizer.
+MAX_CONDITION_NUMBER = 1e12
+
 
 class MeanVarianceOptimizer:
     def __init__(self, risk_free_rate: float = 0.05):
@@ -47,16 +50,20 @@ class MeanVarianceOptimizer:
             return None
 
         mu_sample = np.mean(returns_matrix, axis=0)
-        # James-Stein shrinkage: shrink sample means toward grand mean
-        # Reduces estimation error for expected returns (Jorion, 1986)
-        mu = self._james_stein_shrink(mu_sample, returns_matrix)
         # Ledoit-Wolf shrinkage: stabilizes covariance estimate for small samples
         lw = LedoitWolf().fit(returns_matrix)
         cov = lw.covariance_
 
-        if np.any(np.isnan(cov)) or np.linalg.det(cov) == 0:
-            logger.warning("meanvar.singular_covariance")
+        # Condition number, not determinant: det() of a daily-return covariance
+        # underflows to exactly 0.0 for a few dozen assets even when the matrix
+        # is perfectly well conditioned.
+        if not np.all(np.isfinite(cov)) or np.linalg.cond(cov) > MAX_CONDITION_NUMBER:
+            logger.warning("meanvar.singular_covariance", n_assets=n_assets)
             return None
+
+        # Bayes-Stein shrinkage of sample means toward the grand mean
+        # (Jorion, 1986). Reduces estimation error in expected returns.
+        mu = self._james_stein_shrink(mu_sample, cov, n_days)
 
         # Annualize
         mu_ann = mu * 252
@@ -73,13 +80,25 @@ class MeanVarianceOptimizer:
         min_var_w = self._min_variance(cov_ann, n_assets)
 
         # --- Maximum Sharpe (Tangency) Portfolio ---
-        max_sharpe_w = self._max_sharpe(mu_ann, cov_ann, n_assets)
+        # A long-only tangency portfolio only exists when at least one asset is
+        # expected to beat the risk-free rate. Otherwise "maximizing" a negative
+        # Sharpe ratio maximizes volatility and piles into the riskiest stock,
+        # so fall back to minimum variance and say so.
+        max_sharpe_note = None
+        if np.max(mu_ann) <= self.rf * 252:
+            max_sharpe_w = min_var_w
+            max_sharpe_note = "no_asset_beats_risk_free_rate_min_variance_used"
+            logger.warning("meanvar.no_positive_excess_return", n_assets=n_assets)
+        else:
+            max_sharpe_w = self._max_sharpe(mu_ann, cov_ann, n_assets)
 
         # --- Equal Weight baseline ---
         eq_w = np.ones(n_assets) / n_assets
 
         # --- Efficient Frontier (10 points) ---
-        frontier = self._efficient_frontier(mu_ann, cov_ann, n_assets, n_points=10)
+        frontier = self._efficient_frontier(
+            mu_ann, cov_ann, n_assets, n_points=10, min_var_w=min_var_w
+        )
 
         # --- Risk contribution for max-sharpe portfolio ---
         risk_contrib = self._risk_contribution(max_sharpe_w, cov_ann)
@@ -103,6 +122,7 @@ class MeanVarianceOptimizer:
             "tickers": tickers,
             "min_variance": _metrics(min_var_w, "min_variance"),
             "max_sharpe": _metrics(max_sharpe_w, "max_sharpe"),
+            "max_sharpe_note": max_sharpe_note,
             "equal_weight": _metrics(eq_w, "equal_weight"),
             "efficient_frontier": frontier,
             "risk_contribution": {t: round(float(rc), 4) for t, rc in zip(tickers, risk_contrib)},
@@ -122,64 +142,120 @@ class MeanVarianceOptimizer:
         return result
 
     def _james_stein_shrink(
-        self, mu_sample: np.ndarray, returns_matrix: np.ndarray
+        self, mu_sample: np.ndarray, cov: np.ndarray, n_days: int
     ) -> np.ndarray:
-        """James-Stein shrinkage of sample means toward the grand mean."""
-        n_days, p = returns_matrix.shape
+        """Bayes-Stein shrinkage of sample means toward the grand mean.
+
+        Jorion (1986): mu_bs = (1 - w) * mu + w * mu0, with
+
+            w = (N + 2) / ((N + 2) + T * (mu - mu0)' Sigma^-1 (mu - mu0))
+
+        where N is the number of assets, T the number of observations and
+        Sigma the covariance of returns. The quadratic form is dimensionless
+        (a squared Mahalanobis distance), so w is always in (0, 1]: means that
+        are far apart relative to their noise are shrunk less.
+        """
+        p = len(mu_sample)
         if p < 3:
-            return mu_sample  # JS requires p >= 3
-        grand_mean = np.mean(mu_sample)
-        cov_mu = np.cov(returns_matrix, rowvar=False) / n_days
+            return mu_sample  # Stein shrinkage needs at least 3 assets
+        grand_mean = float(np.mean(mu_sample))
         diff = mu_sample - grand_mean
-        denom = float(diff @ cov_mu @ diff) if np.any(diff != 0) else 1e-10
-        # Shrinkage intensity: 1 - (p-2)/n * trace(cov_mu) / ||mu - grand_mean||^2
-        shrinkage = max(0.0, 1.0 - (p - 2) * np.trace(cov_mu) / max(denom, 1e-10))
-        mu_js = grand_mean + shrinkage * diff
-        logger.debug("meanvar.james_stein", shrinkage=round(shrinkage, 4))
+        distance = float(diff @ np.linalg.solve(cov, diff))
+        weight = (p + 2) / ((p + 2) + n_days * max(distance, 0.0))
+        mu_js = (1.0 - weight) * mu_sample + weight * grand_mean
+        logger.debug("meanvar.james_stein", shrinkage_weight=round(weight, 4))
         return mu_js
 
     def _min_variance(self, cov: np.ndarray, n: int) -> np.ndarray:
         w0 = np.ones(n) / n
         bounds = [(0, 1)] * n
         cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
-        res = minimize(lambda w: w @ cov @ w, w0, method="SLSQP", bounds=bounds, constraints=cons)
-        return res.x if res.success else w0
+        # Variance in annualized units is ~1e-2..1e0; scale so SLSQP's default
+        # tolerance is meaningful for low-volatility universes.
+        scale = 1.0 / max(float(np.mean(np.diag(cov))), 1e-12)
+        res = minimize(
+            lambda w: scale * (w @ cov @ w), w0, jac=lambda w: 2 * scale * (cov @ w),
+            method="SLSQP", bounds=bounds, constraints=cons,
+            options={"maxiter": 500, "ftol": 1e-10},
+        )
+        return self._clean_weights(res.x) if res.success else w0
 
     def _max_sharpe(self, mu: np.ndarray, cov: np.ndarray, n: int) -> np.ndarray:
-        rf_ann = self.rf * 252
-        w0 = np.ones(n) / n
-        bounds = [(0, 1)] * n
-        cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+        """Long-only tangency portfolio.
 
-        def neg_sharpe(w):
-            ret = w @ mu
-            vol = np.sqrt(w @ cov @ w)
-            return -(ret - rf_ann) / vol if vol > 1e-10 else 1e10
+        Solved in its convex form: minimize y' Sigma y subject to
+        (mu - rf)' y = 1, y >= 0, then w = y / sum(y). Unlike maximizing the
+        Sharpe ratio directly this has a single optimum, so the answer does
+        not depend on the starting point. Caller guarantees max(mu) > rf.
+        """
+        excess = mu - self.rf * 252
+        best = int(np.argmax(excess))
+        y0 = np.zeros(n)
+        y0[best] = 1.0 / excess[best]  # feasible start
+        scale = 1.0 / max(float(np.mean(np.diag(cov))), 1e-12)
+        cons = [{"type": "eq", "fun": lambda y: excess @ y - 1.0, "jac": lambda y: excess}]
+        res = minimize(
+            lambda y: scale * (y @ cov @ y), y0, jac=lambda y: 2 * scale * (cov @ y),
+            method="SLSQP", bounds=[(0, None)] * n, constraints=cons,
+            options={"maxiter": 500, "ftol": 1e-10},
+        )
+        if not res.success or np.sum(res.x) <= 0:
+            logger.warning("meanvar.max_sharpe_failed", message=str(res.message))
+            return self._min_variance(cov, n)
+        return self._clean_weights(res.x / np.sum(res.x))
 
-        res = minimize(neg_sharpe, w0, method="SLSQP", bounds=bounds, constraints=cons)
-        return res.x if res.success else w0
+    @staticmethod
+    def _clean_weights(w: np.ndarray) -> np.ndarray:
+        """Zero out solver noise and renormalize to sum to 1."""
+        w = np.where(w < 1e-6, 0.0, w)
+        total = float(np.sum(w))
+        return w / total if total > 0 else np.ones_like(w) / len(w)
 
-    def _efficient_frontier(self, mu: np.ndarray, cov: np.ndarray, n: int, n_points: int = 10) -> list[dict]:
-        # Get return range
-        min_ret = float(np.min(mu))
+    def _efficient_frontier(
+        self,
+        mu: np.ndarray,
+        cov: np.ndarray,
+        n: int,
+        n_points: int = 10,
+        min_var_w: np.ndarray | None = None,
+    ) -> list[dict]:
+        """Minimum-volatility portfolio for each target return.
+
+        Targets run from the minimum-variance portfolio's return up to the
+        best single asset: below the minimum-variance point a portfolio has
+        both less return and more risk, so it is not on the efficient part.
+        """
         max_ret = float(np.max(mu))
-        if min_ret == max_ret:
+        if min_var_w is not None:
+            min_ret = float(min_var_w @ mu)
+        else:
+            min_ret = float(np.min(mu))
+        if max_ret - min_ret < 1e-9:
             return []
 
         target_returns = np.linspace(min_ret, max_ret, n_points)
         frontier = []
+        # Same scaling as _min_variance: annualized variances are small enough
+        # that SLSQP's default tolerance would stop it well short of the
+        # optimum and leave a jagged "frontier".
+        scale = 1.0 / max(float(np.mean(np.diag(cov))), 1e-12)
+        w0 = min_var_w if min_var_w is not None else np.ones(n) / n
 
         for target in target_returns:
-            w0 = np.ones(n) / n
             bounds = [(0, 1)] * n
             cons = [
-                {"type": "eq", "fun": lambda w: np.sum(w) - 1},
-                {"type": "eq", "fun": lambda w, t=target: w @ mu - t},
+                {"type": "eq", "fun": lambda w: np.sum(w) - 1, "jac": lambda w: np.ones(n)},
+                {"type": "eq", "fun": lambda w, t=target: w @ mu - t, "jac": lambda w: mu},
             ]
-            res = minimize(lambda w: w @ cov @ w, w0, method="SLSQP", bounds=bounds, constraints=cons)
+            res = minimize(
+                lambda w: scale * (w @ cov @ w), w0, jac=lambda w: 2 * scale * (cov @ w),
+                method="SLSQP", bounds=bounds, constraints=cons,
+                options={"maxiter": 500, "ftol": 1e-10},
+            )
             if res.success:
                 vol = float(np.sqrt(res.x @ cov @ res.x))
                 frontier.append({"return": round(float(target), 4), "volatility": round(vol, 4)})
+                w0 = res.x  # warm-start the next, slightly higher target
 
         return frontier
 
@@ -236,13 +312,19 @@ class MeanVarianceOptimizer:
         else:
             w_mkt = np.ones(n) / n
 
-        # Risk aversion implied from market: delta = (E[R_m] - R_f) / sigma_m^2
+        # Risk aversion implied from market: delta = (E[R_m] - R_f) / sigma_m^2.
+        # A sample-mean estimate can be negative or absurdly large over a short
+        # window; a negative delta would invert every equilibrium return, so
+        # keep it in the range used in practice (He & Litterman use 2.5).
         port_var = float(w_mkt @ cov_ann @ w_mkt)
         port_ret = float(w_mkt @ mu_ann)
         rf_ann = self.rf * 252
         delta = (port_ret - rf_ann) / port_var if port_var > 0 else 2.5
+        if not np.isfinite(delta):
+            delta = 2.5
+        delta = float(np.clip(delta, 1.0, 10.0))
 
-        # Equilibrium returns: pi = delta * Sigma * w_mkt
+        # Equilibrium EXCESS returns: pi = delta * Sigma * w_mkt
         pi = delta * cov_ann @ w_mkt
 
         # Tau: scaling factor for uncertainty in equilibrium (typical 0.025-0.05)
@@ -257,6 +339,9 @@ class MeanVarianceOptimizer:
         omega_inv = inv(omega)
 
         posterior_cov = inv(tau_cov_inv + P.T @ omega_inv @ P)
-        mu_bl = posterior_cov @ (tau_cov_inv @ pi + P.T @ omega_inv @ Q)
+        mu_bl_excess = posterior_cov @ (tau_cov_inv @ pi + P.T @ omega_inv @ Q)
 
-        return mu_bl
+        # pi and the views are excess returns; everything downstream expects
+        # total returns and subtracts the risk-free rate itself. Returning the
+        # excess figures would subtract it twice.
+        return mu_bl_excess + rf_ann

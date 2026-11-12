@@ -16,6 +16,7 @@ import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from src.clients.symbols import normalize_symbol
 from src.models.schemas import Direction, SmartMoneyEventSchema, SourceType
 
 logger = structlog.get_logger()
@@ -104,12 +105,12 @@ class CongressClient:
             ticker = (issuer.get("issuerTicker") or "").strip().upper()
 
             # Skip if no ticker (bonds, funds without tickers, etc.)
-            if not ticker or len(ticker) > 10 or ":" in ticker:
-                # Capitol Trades sometimes uses "TICKER:EXCHANGE" format
-                if ":" in ticker:
-                    ticker = ticker.split(":")[0]
-                if not ticker:
-                    return None
+            # Capitol Trades sometimes uses "TICKER:EXCHANGE" format
+            if ":" in ticker:
+                ticker = ticker.split(":")[0]
+            ticker = normalize_symbol(ticker)
+            if not ticker:
+                return None
 
             tx_type = (trade.get("txType") or "").lower()
             if tx_type in ("buy", "purchase"):

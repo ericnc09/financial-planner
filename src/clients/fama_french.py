@@ -160,9 +160,27 @@ class FamaFrenchClient:
             ss_tot = np.sum((y_excess - np.mean(y_excess)) ** 2)
             r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
+            # Standard error of the intercept. One year of daily data pins a
+            # stock's alpha down only to within tens of percent a year, so the
+            # point estimate alone says almost nothing; the t-statistic says
+            # how far from zero it is relative to that noise.
+            alpha_tstat = None
+            alpha_se_annual = None
+            dof = n - X_with_const.shape[1]
+            if dof > 0 and ss_res > 0:
+                sigma2 = ss_res / dof
+                xtx_inv = np.linalg.pinv(X_with_const.T @ X_with_const)
+                se_alpha = float(np.sqrt(sigma2 * xtx_inv[0, 0]))
+                if se_alpha > 0 and np.isfinite(se_alpha):
+                    alpha_tstat = round(float(beta[0] / se_alpha), 4)
+                    alpha_se_annual = round(se_alpha * 252, 4)
+
             return {
                 "alpha_daily": round(float(beta[0]), 6),
                 "alpha_annual": round(float(beta[0] * 252), 4),
+                "alpha_se_annual": alpha_se_annual,
+                "alpha_tstat": alpha_tstat,
+                "n_obs": int(n),
                 "beta_market": round(float(beta[1]), 4),
                 "beta_smb": round(float(beta[2]), 4),
                 "beta_hml": round(float(beta[3]), 4),

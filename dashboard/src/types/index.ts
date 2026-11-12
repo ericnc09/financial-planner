@@ -91,6 +91,7 @@ export interface FamaFrenchData {
   beta_rmw: number | null;
   beta_cma: number | null;
   r_squared: number | null;
+  alpha_tstat?: number | null;
 }
 
 export interface EventStudyData {
@@ -139,6 +140,7 @@ export interface BayesianDecayData {
   decay_quality: string | null;
   signal_strength_5d: number | null;
   signal_strength_20d: number | null;
+  prob_alpha_positive?: number | null;
 }
 
 export interface MeanVarianceData {

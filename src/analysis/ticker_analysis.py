@@ -11,7 +11,9 @@ Models run per ticker:
   5. Copula tail risk (Student-t)
   6. Earnings Surprise Overlay (C2)
   7. XGBoost signal classifier predict-only (C1, if model trained)
-  8. Bayesian Decay, regime-conditional (C6, uses HMM state as prior)
+  8. Bayesian decay (C6) — only when the caller supplies the pooled
+     post-disclosure decay for a recent signal on this ticker. A ticker with
+     no signal has no alpha to decay.
 """
 
 import asyncio
@@ -28,7 +30,8 @@ from src.analysis.garch_forecast import GARCHForecaster
 from src.analysis.copula_tail_risk import CopulaTailRisk
 from src.analysis.ensemble_scoring import EnsembleScorer
 from src.analysis.earnings_overlay import EarningsOverlay
-from src.analysis.bayesian_decay import BayesianDecayAnalyzer
+from src.analysis.pooled_alpha import recent_decay_components
+from src.analysis.xgb_features import build_feature_record
 from src.analysis.xgboost_classifier import XGBoostSignalClassifier
 
 logger = structlog.get_logger()
@@ -51,6 +54,8 @@ async def analyze_ticker(
     news_analyzer=None,
     weather=None,
     sector: str | None = None,
+    bayesian_buy: dict | None = None,
+    bayesian_sell: dict | None = None,
 ) -> dict | None:
     """Run all models on a single ticker and return results with verdict.
 
@@ -59,6 +64,10 @@ async def analyze_ticker(
             adds the news_sentiment ensemble component.
         weather: WeatherOverlay — adds the weather_overlay component for
             weather-sensitive sectors (requires `sector`).
+        bayesian_buy / bayesian_sell: decay components from
+            bayesian_decay.decay_component() for a recent signal on this
+            ticker in that direction. Looked up from the pipeline's stored
+            fits when not given.
     """
     price_data = await yahoo.get_price_history(ticker, days=504)
     if price_data is None:
@@ -110,21 +119,18 @@ async def analyze_ticker(
             if n >= 60:
                 copula_result = copula.analyze(returns[-n:], mkt_returns[-n:])
 
-    # C6: Bayesian decay with regime-conditional prior from HMM state
-    bayesian_result = None
-    bayesian_sell_result = None
     hmm_regime_state = None
     if hmm_result:
         hmm_regime_state = hmm_result.get("current_state")
-    # Use recent 40-day abnormal returns (proxy: excess over mean)
-    if len(returns) >= 20:
-        mean_ret = float(np.mean(returns[-252:] if len(returns) >= 252 else returns))
-        abnormal = returns[-40:] - mean_ret
-        bd = BayesianDecayAnalyzer(regime=hmm_regime_state)
-        bayesian_result = bd.analyze(abnormal, direction="buy")
-        # Sell-side decay: alpha for a seller is the inverted abnormal return
-        bd_sell = BayesianDecayAnalyzer(regime=hmm_regime_state)
-        bayesian_sell_result = bd_sell.analyze(-abnormal, direction="sell")
+
+    # C6: Bayesian decay, from the pooled post-disclosure history — present
+    # only when this ticker has a recent signal with a stored decay fit. (The
+    # last 40 days of demeaned returns used to be fed in here; with no event
+    # to anchor on, that was a momentum flag wearing the decay label.)
+    if bayesian_buy is None and bayesian_sell is None:
+        bayesian_buy, bayesian_sell = await asyncio.to_thread(recent_decay_components, ticker)
+    bayesian_result = bayesian_buy
+    bayesian_sell_result = bayesian_sell
 
     # News sentiment (bias-guarded inside the analyzer via as_of=now)
     news_result = None
@@ -157,7 +163,7 @@ async def analyze_ticker(
     xgb_result = None
     if _xgb_classifier.is_trained:
         xgb_features = _build_xgb_features(
-            hmm_result, garch_result, ff_result, copula_result, closes, returns,
+            hmm_result, garch_result, ff_result, copula_result, closes, volumes,
             direction="buy", news_result=news_result,
         )
         xgb_raw = _xgb_classifier.predict(xgb_features)
@@ -260,65 +266,33 @@ def _earnings_overlay() -> EarningsOverlay:
 
 def _build_xgb_features(
     hmm_result, garch_result, ff_result, copula_result,
-    closes, returns, direction: str, news_result: dict | None = None,
+    closes, volumes, direction: str, news_result: dict | None = None,
 ) -> dict:
-    """Build XGBoost feature dict from model outputs + price data."""
-    features: dict = {}
+    """Feature record for the classifier from model outputs + price data.
 
-    # News sentiment features (bias-guarded upstream)
-    if news_result:
-        features["news_volume_z"] = news_result.get("news_volume_z", 0.0)
-        features["news_sentiment_mean"] = news_result.get("news_sentiment_mean", 0.0)
-        features["news_sentiment_trend_3d"] = news_result.get("news_sentiment_trend_3d", 0.0)
-
-    # HMM features
-    if hmm_result:
-        features["hmm_bull_prob"] = hmm_result.get("prob_bull", 0.0) or 0.0
-        features["hmm_bear_prob"] = hmm_result.get("prob_bear", 0.0) or 0.0
-
-    # GARCH
-    if garch_result:
-        features["garch_current_vol"] = garch_result.get("current_conditional_vol_annual", 0.25)
-
-    # Fama-French alpha
-    if ff_result:
-        features["ff_alpha"] = ff_result.get("alpha_annual", 0.0) or 0.0
-
-    # Copula tail score
-    if copula_result:
-        features["copula_tail_score"] = copula_result.get("tail_risk_score", 50.0)
-
-    # Price-derived
+    Price features use the same definitions as enrichment (YahooClient), and
+    anything this path does not know — fundamentals, conviction — is left
+    missing for the model to impute rather than filled with a number.
+    """
+    price = {}
     if len(closes) >= 22:
-        features["momentum_30d"] = float((closes[-1] - closes[-22]) / closes[-22])
+        price["momentum_30d"] = float((closes[-1] - closes[-22]) / closes[-22])
     if len(closes) >= 63:
-        features["momentum_90d"] = float((closes[-1] - closes[-63]) / closes[-63])
-
-    if len(closes) >= 252:
+        price["momentum_90d"] = float((closes[-1] - closes[-63]) / closes[-63])
+    if len(closes) > 0:
         high_52w = float(np.max(closes[-252:]))
-        features["drawdown_from_52w_high"] = (high_52w - float(closes[-1])) / high_52w
+        if high_52w > 0:
+            price["drawdown_from_52w_high"] = (high_52w - float(closes[-1])) / high_52w
+    price["rsi_14d"] = YahooClient._compute_rsi(np.asarray(closes, dtype=float))
+    if volumes is not None and len(volumes) > 0:
+        price["avg_volume_30d"] = float(np.mean(volumes[-30:]))
 
-    if len(closes) >= 15:
-        features["rsi_14d"] = float(_compute_rsi(closes))
-
-    if len(returns) >= 20:
-        features["avg_volume_30d"] = 0.0  # volume not in returns; left neutral
-
-    features["direction_encoded"] = 1.0 if direction == "buy" else -1.0
-
-    return features
-
-
-def _compute_rsi(closes: np.ndarray, period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 50.0
-    deltas = np.diff(closes)
-    recent = deltas[-period:]
-    gains = np.where(recent > 0, recent, 0.0)
-    losses = np.where(recent < 0, -recent, 0.0)
-    avg_gain = float(np.mean(gains))
-    avg_loss = float(np.mean(losses))
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 2)
+    return build_feature_record(
+        direction=direction,
+        enrichment=price,
+        hmm=hmm_result,
+        garch_vol=(garch_result or {}).get("current_conditional_vol_annual"),
+        ff_alpha=(ff_result or {}).get("alpha_annual"),
+        copula_score=(copula_result or {}).get("tail_risk_score"),
+        news=news_result,
+    )

@@ -46,6 +46,8 @@ class EnrichmentSchema(BaseModel):
     avg_volume_30d: float | None = None
     sector: str | None = None
     short_ratio: float | None = None
+    # "common" | "preferred_or_debt" | "fund_or_other" (not persisted)
+    security_type: str | None = None
 
 
 class MacroSnapshotSchema(BaseModel):

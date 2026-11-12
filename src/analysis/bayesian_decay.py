@@ -1,17 +1,29 @@
 """
-Bayesian Signal Decay — Estimates how quickly smart money alpha decays after a signal.
+Bayesian Signal Decay — how quickly smart-money alpha fades after a signal
+becomes public.
 
-Uses exponential decay model with Gamma prior on the decay rate.
+Model, for t = 0, 1, 2, ... trading days after disclosure:
+
+    AR(t) ~ Normal(A * exp(-lambda * t), sigma^2)
+
+fitted to a series of SIGNED abnormal returns (direction-adjusted, so a
+positive value is alpha for someone following the signal). A is the day-0
+abnormal return and may be negative; lambda is the decay rate.
+
+The series should be an average over many comparable past events (see
+src/analysis/pooled_alpha.py). A single event's abnormal returns are almost
+entirely noise, and fitting the decay to their absolute value — as an earlier
+version did — measures how quickly volatility settles, not alpha.
+
 Key outputs:
-- Posterior half-life (days until signal alpha halves)
-- Signal strength remaining at key horizons
-- Optimal entry/exit windows
+- Posterior half-life (days until the daily alpha halves)
+- Probability that the alpha is positive at all
+- Share of the alpha remaining at key horizons
 - Decay quality classification
 """
 
 import numpy as np
 import structlog
-from scipy import stats
 
 logger = structlog.get_logger()
 
@@ -29,6 +41,8 @@ REGIME_HALF_LIFE = {
     "bear": 7.0,
 }
 
+HORIZONS = (1, 5, 10, 20, 40)
+
 
 class BayesianDecayAnalyzer:
     def __init__(
@@ -36,6 +50,7 @@ class BayesianDecayAnalyzer:
         prior_half_life: float = 15.0,
         prior_strength: float = 2.0,
         regime: str | None = None,
+        seed: int = 42,
     ):
         """
         Args:
@@ -45,6 +60,7 @@ class BayesianDecayAnalyzer:
             regime: Market regime string ('expansion', 'transition', 'recession',
                     or HMM state 'bull'/'bear'/'sideways').
                     When provided, adjusts the prior half-life accordingly.
+            seed: Seed for the sampler, so the same input gives the same fit.
         """
         if regime and regime in REGIME_HALF_LIFE:
             effective_hl = REGIME_HALF_LIFE[regime]
@@ -54,7 +70,7 @@ class BayesianDecayAnalyzer:
         self.prior_lambda = np.log(2) / effective_hl
         self.prior_strength = prior_strength
         self.regime = regime
-        self.rng = np.random.default_rng(42)
+        self.seed = seed
 
     def analyze(
         self,
@@ -62,86 +78,81 @@ class BayesianDecayAnalyzer:
         direction: str = "buy",
     ) -> dict | None:
         """
-        Fit Bayesian exponential decay to post-event abnormal returns.
+        Fit the exponential decay to post-disclosure abnormal returns.
 
         Args:
-            abnormal_returns: Daily abnormal returns (sign-adjusted: positive = alpha).
-            direction: 'buy' or 'sell'.
+            abnormal_returns: Signed daily abnormal returns for days 0, 1, 2, ...
+                after disclosure (direction-adjusted: positive = alpha).
+                Normally the mean across many comparable events.
+            direction: 'buy' or 'sell' (label only; the input is already signed).
+
+        Returns:
+            Fit summary, or None when there is too little data or the sampler
+            is unavailable.
         """
-        if len(abnormal_returns) < 5:
+        ar = np.asarray(abnormal_returns, dtype=float)
+        ar = ar[np.isfinite(ar)]
+        if len(ar) < 5:
             return None
 
-        ar = np.array(abnormal_returns, dtype=float)
         n_days = len(ar)
-        days = np.arange(1, n_days + 1)
-        car = np.cumsum(ar)
-        total_car = float(car[-1])
-
-        # Smoothed absolute AR for decay fitting
-        window = min(3, n_days)
-        smoothed = np.convolve(np.abs(ar), np.ones(window) / window, mode="valid")
-        s_days = days[:len(smoothed)]
-
-        pos_mask = smoothed > 0
-        if np.sum(pos_mask) < 3:
+        t = np.arange(n_days, dtype=float)
+        total_car = float(np.sum(ar))
+        scale = float(np.std(ar, ddof=1))
+        if scale <= 0:
             return self._no_signal(direction, n_days)
 
-        # Log-linear regression for MLE initialization
-        log_ar = np.log(smoothed[pos_mask])
-        t_pos = s_days[pos_mask]
-        X = np.column_stack([np.ones(len(t_pos)), t_pos])
-        coeffs, _, _, _ = np.linalg.lstsq(X, log_ar, rcond=None)
-        mle_A = float(np.exp(coeffs[0]))
-        mle_lambda = max(-coeffs[1], 0.001)
+        posterior = self._mcmc_posterior(ar, t, scale)
+        if posterior is None:
+            return None
+        lambda_samples, amplitude_samples = posterior
 
-        # MCMC posterior sampling for (A, lambda, sigma)
-        # Model: |AR(t)| ~ N(A * exp(-lambda * t), sigma^2)
-        post_lambda, mle_A, hl_samples, samples = self._mcmc_posterior(
-            smoothed[pos_mask], t_pos, mle_A, mle_lambda
-        )
+        post_lambda = float(np.median(lambda_samples))
         post_half_life = float(np.log(2) / post_lambda)
+        hl_samples = np.log(2) / lambda_samples
+        prob_positive = float(np.mean(amplitude_samples > 0))
 
-        ci_lambda = (round(float(np.percentile(samples, 2.5)), 4),
-                     round(float(np.percentile(samples, 97.5)), 4))
+        ci_lambda = (round(float(np.percentile(lambda_samples, 2.5)), 4),
+                     round(float(np.percentile(lambda_samples, 97.5)), 4))
         ci_hl = (round(float(np.percentile(hl_samples, 2.5)), 1),
                  round(float(np.percentile(hl_samples, 97.5)), 1))
 
-        # Signal strength at horizons
+        # Share of the alpha still ahead after h days
         strength = {}
-        for h in [1, 5, 10, 20, 40]:
+        for h in HORIZONS:
             remaining = float(np.exp(-post_lambda * h))
             prob_active = float(np.mean(hl_samples > h))
             strength[h] = {"remaining_pct": round(remaining * 100, 1), "prob_active": round(prob_active, 4)}
 
-        # Entry/exit windows
+        # Entry/exit windows: days until 70% / 30% of the alpha remains
         entry_days = round(float(-np.log(0.70) / post_lambda), 1)
         exit_days = round(float(-np.log(0.30) / post_lambda), 1)
-
-        # Information ratio
-        ir = float(np.mean(ar) / np.std(ar, ddof=1)) * np.sqrt(252) if len(ar) > 1 and np.std(ar, ddof=1) > 0 else 0.0
 
         result = {
             "direction": direction,
             "regime": self.regime,
             "n_days": n_days,
             "total_car": round(total_car, 6),
-            "mle_amplitude": round(mle_A, 6),
-            "mle_lambda": round(float(mle_lambda), 4),
-            "posterior_lambda": round(float(post_lambda), 4),
+            "amplitude": round(float(np.median(amplitude_samples)), 6),
+            "prob_alpha_positive": round(prob_positive, 4),
+            "posterior_lambda": round(post_lambda, 4),
             "posterior_half_life": round(post_half_life, 1),
             "ci_lambda_95": ci_lambda,
             "ci_half_life_95": ci_hl,
             "signal_strength": strength,
             "entry_window_days": entry_days,
             "exit_window_days": exit_days,
-            "annualized_ir": round(ir, 4),
-            "decay_quality": self._classify(post_half_life, total_car),
+            # No information ratio: the input is an average across events, so
+            # its mean/std says nothing about the risk of any one position.
+            "annualized_ir": None,
+            "decay_quality": self._classify(post_half_life, prob_positive),
         }
 
         logger.info(
             "bayesian_decay.analyzed",
             direction=direction, half_life=round(post_half_life, 1),
-            total_car=round(total_car, 6), quality=result["decay_quality"],
+            total_car=round(total_car, 6), prob_alpha_positive=round(prob_positive, 3),
+            quality=result["decay_quality"],
         )
         return result
 
@@ -149,113 +160,71 @@ class BayesianDecayAnalyzer:
         self,
         obs: np.ndarray,
         t: np.ndarray,
-        init_A: float,
-        init_lambda: float,
-    ) -> tuple[float, float, np.ndarray, np.ndarray]:
+        scale: float,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """
-        MCMC sampling of exponential decay parameters via emcee.
+        Posterior samples of (lambda, A) via emcee.
 
-        Model: obs[i] ~ N(A * exp(-lambda * t[i]), sigma^2)
-        Priors: A ~ HalfNormal(scale=init_A*3), lambda ~ Gamma(prior_strength, prior_lambda),
-                sigma ~ HalfCauchy(scale=0.01)
+        Priors: A ~ Normal(0, (3*scale)^2)        (signed, weakly informative)
+                lambda ~ Gamma(prior_strength, rate = prior_strength / prior_lambda)
+                sigma ~ HalfCauchy(scale)
 
-        Falls back to MLE + Gamma approximation if emcee unavailable.
+        There is no closed-form fallback: the Gamma "conjugate" update used
+        previously was the posterior of a precision, not of a decay rate.
         """
         try:
             import emcee
         except ImportError:
-            # Fallback: use Gamma posterior approximation (original approach, corrected)
-            return self._gamma_fallback(obs, t, init_A, init_lambda)
+            logger.warning("bayesian_decay.emcee_missing", hint="pip install emcee")
+            return None
 
         prior_a = self.prior_strength
         prior_rate = self.prior_strength / self.prior_lambda
-        init_sigma = float(np.std(obs - init_A * np.exp(-init_lambda * t)))
-
-        def log_prior(theta):
-            A, lam, sig = theta
-            if A <= 0 or lam <= 0 or sig <= 0:
-                return -np.inf
-            # Gamma prior on lambda
-            lp = (prior_a - 1) * np.log(lam) - prior_rate * lam
-            # HalfNormal on A
-            lp += -0.5 * (A / (init_A * 3)) ** 2
-            # HalfCauchy on sigma
-            lp += -np.log(1 + (sig / 0.01) ** 2)
-            return lp
-
-        def log_likelihood(theta):
-            A, lam, sig = theta
-            model = A * np.exp(-lam * t)
-            resid = obs - model
-            return -0.5 * np.sum((resid / sig) ** 2) - len(obs) * np.log(sig)
+        amp_scale = 3.0 * scale
 
         def log_prob(theta):
-            lp = log_prior(theta)
-            if not np.isfinite(lp):
+            A, lam, sig = theta
+            if lam <= 0 or sig <= 0:
                 return -np.inf
-            return lp + log_likelihood(theta)
+            lp = (prior_a - 1) * np.log(lam) - prior_rate * lam          # Gamma on lambda
+            lp += -0.5 * (A / amp_scale) ** 2                             # Normal on A
+            lp += -np.log(1 + (sig / scale) ** 2)                         # HalfCauchy on sigma
+            resid = obs - A * np.exp(-lam * t)
+            return lp - 0.5 * np.sum((resid / sig) ** 2) - len(obs) * np.log(sig)
 
-        ndim, nwalkers = 3, 16
-        p0 = np.array([init_A, init_lambda, max(init_sigma, 0.001)])
-        # Initialize walkers in a small ball around MLE
-        pos = p0 + 1e-4 * self.rng.standard_normal((nwalkers, ndim))
-        pos[:, 0] = np.abs(pos[:, 0])  # A > 0
-        pos[:, 1] = np.abs(pos[:, 1])  # lambda > 0
-        pos[:, 2] = np.abs(pos[:, 2])  # sigma > 0
+        # Start at the least-squares amplitude for the prior decay rate
+        basis = np.exp(-self.prior_lambda * t)
+        init_A = float(obs @ basis / (basis @ basis))
+        rng = np.random.default_rng(self.seed)
+        ndim, nwalkers = 3, 24
+        pos = np.column_stack([
+            init_A + 0.1 * scale * rng.standard_normal(nwalkers),
+            self.prior_lambda * np.exp(0.2 * rng.standard_normal(nwalkers)),
+            scale * np.exp(0.2 * rng.standard_normal(nwalkers)),
+        ])
 
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob)
-        sampler.run_mcmc(pos, 1000, progress=False)
+        state = emcee.State(pos, random_state=np.random.RandomState(self.seed).get_state())
+        sampler.run_mcmc(state, 1500, progress=False)
 
-        # Discard burn-in, thin
-        flat = sampler.get_chain(discard=500, thin=5, flat=True)
-        A_samples = flat[:, 0]
-        lambda_samples = flat[:, 1]
-
-        post_lambda = float(np.median(lambda_samples))
-        post_A = float(np.median(A_samples))
-        hl_samples = np.log(2) / np.maximum(lambda_samples, 0.001)
-
-        return post_lambda, post_A, hl_samples, lambda_samples
-
-    def _gamma_fallback(
-        self,
-        obs: np.ndarray,
-        t: np.ndarray,
-        init_A: float,
-        init_lambda: float,
-    ) -> tuple[float, float, np.ndarray, np.ndarray]:
-        """Corrected Gamma conjugate approximation when emcee not available."""
-        a0 = self.prior_strength
-        b0 = self.prior_strength / self.prior_lambda
-        n = len(obs)
-        # Sufficient statistic: sum of squared residuals weighted by time
-        model = init_A * np.exp(-init_lambda * t)
-        residuals = obs - model
-        mse = float(np.mean(residuals ** 2))
-        # Posterior shape/rate for lambda
-        a_post = a0 + n / 2
-        b_post = b0 + n * mse / (2 * max(init_A ** 2, 1e-10))
-
-        post_lambda = float(a_post / b_post)
-        samples = self.rng.gamma(a_post, 1 / b_post, 5000)
-        samples = np.maximum(samples, 0.001)
-        hl_samples = np.log(2) / samples
-        return post_lambda, init_A, hl_samples, samples
+        flat = sampler.get_chain(discard=750, thin=5, flat=True)
+        lambda_samples = np.maximum(flat[:, 1], 1e-4)
+        return lambda_samples, flat[:, 0]
 
     def _no_signal(self, direction: str, n_days: int) -> dict:
         return {
-            "direction": direction, "n_days": n_days, "total_car": 0.0,
-            "mle_amplitude": 0.0, "mle_lambda": 0.0,
+            "direction": direction, "regime": self.regime, "n_days": n_days, "total_car": 0.0,
+            "amplitude": 0.0, "prob_alpha_positive": 0.5,
             "posterior_lambda": round(float(self.prior_lambda), 4),
             "posterior_half_life": round(float(np.log(2) / self.prior_lambda), 1),
             "ci_lambda_95": (0.0, 0.0), "ci_half_life_95": (0.0, 0.0),
-            "signal_strength": {h: {"remaining_pct": 0.0, "prob_active": 0.0} for h in [1, 5, 10, 20, 40]},
+            "signal_strength": {h: {"remaining_pct": 0.0, "prob_active": 0.0} for h in HORIZONS},
             "entry_window_days": 0.0, "exit_window_days": 0.0,
-            "annualized_ir": 0.0, "decay_quality": "no_signal",
+            "annualized_ir": None, "decay_quality": "no_signal",
         }
 
-    def _classify(self, half_life: float, total_car: float) -> str:
-        if total_car <= 0:
+    def _classify(self, half_life: float, prob_alpha_positive: float) -> str:
+        if prob_alpha_positive < 0.5:
             return "no_alpha"
         if half_life < 3:
             return "flash"
@@ -264,3 +233,27 @@ class BayesianDecayAnalyzer:
         if half_life < 25:
             return "moderate_decay"
         return "slow_decay"
+
+
+def decay_component(fit: dict | None, age_trading_days: float) -> dict | None:
+    """Ensemble input for one signal: how much of the pooled alpha is left.
+
+    Args:
+        fit: Output of BayesianDecayAnalyzer.analyze() for the signal's
+             source and direction.
+        age_trading_days: Trading days since the signal was disclosed.
+    """
+    if not fit or fit.get("decay_quality") == "no_signal":
+        return None
+    lam = fit.get("posterior_lambda")
+    prob_positive = fit.get("prob_alpha_positive")
+    if lam is None or prob_positive is None:
+        return None
+    age = max(0.0, float(age_trading_days))
+    return {
+        "remaining_share": round(float(np.exp(-lam * age)), 4),
+        "prob_alpha_positive": prob_positive,
+        "age_trading_days": round(age, 1),
+        "posterior_half_life": fit.get("posterior_half_life"),
+        "decay_quality": fit.get("decay_quality"),
+    }

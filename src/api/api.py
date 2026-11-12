@@ -191,6 +191,7 @@ class FamaFrenchResponse(BaseModel):
     beta_rmw: float | None = None
     beta_cma: float | None = None
     r_squared: float | None = None
+    alpha_tstat: float | None = None
 
 
 class ExtendedMacroResponse(BaseModel):
@@ -234,6 +235,10 @@ class EventStudyAggregateResponse(BaseModel):
     win_rate_20d: float | None = None
     by_direction: dict | None = None
     by_source: dict | None = None
+    # Distinct disclosure dates behind the t-tests (signals disclosed on the
+    # same day are one observation) and what day 0 is
+    n_clusters: int | None = None
+    anchor: str | None = None
 
 
 class CopulaTailRiskResponse(BaseModel):
@@ -267,6 +272,7 @@ class BayesianDecayResponse(BaseModel):
     decay_quality: str | None = None
     signal_strength_5d: float | None = None
     signal_strength_20d: float | None = None
+    prob_alpha_positive: float | None = None
 
 
 class MeanVarianceResponse(BaseModel):
@@ -349,6 +355,10 @@ class PerformanceSummaryResponse(BaseModel):
     by_conviction_bucket: dict | None = None
     top_winners: list[dict] = []
     top_losers: list[dict] = []
+    # Signals with no price data: counted, never given a return
+    unpriced_signals: int = 0
+    # Which sources the headline numbers above are computed from
+    headline_basis: str | None = None
 
 
 class BacktestRequest(BaseModel):
@@ -724,15 +734,60 @@ def get_macro_history(days: int = Query(default=90, ge=1, le=365)):
 
 
 # Register this literal path before /api/analysis/{ticker}.
+def _is_degenerate_mean_variance(row) -> bool:
+    """True for results stored before the 2026-11 optimizer fix.
+
+    Those runs gave every asset the same expected return, which shows up as
+    max-Sharpe, min-variance and equal-weight returns all being identical and
+    an empty frontier — and often 100% in one stock. They are not shown.
+    """
+    if row.ms_return is None or row.ew_return is None or row.mv_return is None:
+        return False  # cannot tell; do not hide
+    no_frontier = not row.efficient_frontier or row.efficient_frontier in ("[]", "null")
+    return (
+        no_frontier
+        and abs(row.ms_return - row.ew_return) < 1e-9
+        and abs(row.mv_return - row.ew_return) < 1e-9
+    )
+
+
+def _legacy_safe_skew(row):
+    """IV skew only from rows computed with the current definition; legacy
+    rows used unfiltered quotes (values in the tens of thousands)."""
+    return row.iv_skew if row.method_version else None
+
+
+def _hmm_response(row) -> "HMMResponse":
+    """HMM row -> response. Rows stored before probabilities were folded can
+    have a 4/5-state label ("mild_bull") whose probability was dropped; show
+    the regime it belongs to and no probabilities rather than zeros."""
+    probs = [row.prob_bull or 0.0, row.prob_bear or 0.0, row.prob_sideways or 0.0]
+    legacy = sum(probs) < 0.5
+    state = row.current_state or ""
+    if state.startswith("mild_"):
+        state = state[len("mild_"):]
+    return HMMResponse(
+        ticker=row.ticker, run_date=row.run_date,
+        current_state=state or row.current_state,
+        prob_bull=None if legacy else probs[0],
+        prob_bear=None if legacy else probs[1],
+        prob_sideways=None if legacy else probs[2],
+        trans_to_bull=None if legacy else row.trans_to_bull,
+        trans_to_bear=None if legacy else row.trans_to_bear,
+        trans_to_sideways=None if legacy else row.trans_to_sideways,
+    )
+
+
 @app.get("/api/analysis/mean-variance", response_model=MeanVarianceResponse | None)
 def get_mean_variance():
     """Get latest mean-variance portfolio optimization."""
     import json as _json
     session = app.state.session_factory()
     try:
-        row = session.query(MeanVarianceResult).order_by(
+        recent = session.query(MeanVarianceResult).order_by(
             desc(MeanVarianceResult.run_date)
-        ).first()
+        ).limit(20).all()
+        row = next((r for r in recent if not _is_degenerate_mean_variance(r)), None)
         if not row:
             return None
         return MeanVarianceResponse(
@@ -801,12 +856,7 @@ def get_ticker_analysis(ticker: str):
 
         hmm_resp = None
         if hmm:
-            hmm_resp = HMMResponse(
-                ticker=hmm.ticker, run_date=hmm.run_date,
-                current_state=hmm.current_state,
-                prob_bull=hmm.prob_bull, prob_bear=hmm.prob_bear, prob_sideways=hmm.prob_sideways,
-                trans_to_bull=hmm.trans_to_bull, trans_to_bear=hmm.trans_to_bear, trans_to_sideways=hmm.trans_to_sideways,
-            )
+            hmm_resp = _hmm_response(hmm)
 
         garch_resp = None
         if garch:
@@ -829,7 +879,7 @@ def get_ticker_analysis(ticker: str):
                 alpha_annual=ff.alpha_annual, beta_market=ff.beta_market,
                 beta_smb=ff.beta_smb, beta_hml=ff.beta_hml,
                 beta_rmw=ff.beta_rmw, beta_cma=ff.beta_cma,
-                r_squared=ff.r_squared,
+                r_squared=ff.r_squared, alpha_tstat=ff.alpha_tstat,
             )
 
         # Copula Tail Risk
@@ -853,8 +903,12 @@ def get_ticker_analysis(ticker: str):
 
         # Event studies
         import json as _json
+        # Disclosure-anchored only: legacy rows were measured from the trade
+        # date, before the public could have known.
         es_rows = session.query(EventStudyResult).filter(
-            EventStudyResult.ticker == ticker
+            EventStudyResult.ticker == ticker,
+            EventStudyResult.car_20d.isnot(None),
+            EventStudyResult.anchor == "disclosure",
         ).order_by(desc(EventStudyResult.run_date)).limit(20).all()
 
         es_resp = None
@@ -888,6 +942,7 @@ def get_ticker_analysis(ticker: str):
                 entry_window_days=bd.entry_window_days, exit_window_days=bd.exit_window_days,
                 annualized_ir=bd.annualized_ir, decay_quality=bd.decay_quality,
                 signal_strength_5d=bd.signal_strength_5d, signal_strength_20d=bd.signal_strength_20d,
+                prob_alpha_positive=bd.prob_alpha_positive,
             ) for bd in bd_rows]
 
         # Ensemble Scores
@@ -914,7 +969,7 @@ def get_ticker_analysis(ticker: str):
             opts_resp = OptionsFlowResponse(
                 ticker=opts_row.ticker, analysis_date=opts_row.analysis_date,
                 pcr=opts_row.pcr, unusual_volume_score=opts_row.unusual_volume_score,
-                iv_skew=opts_row.iv_skew, max_pain=opts_row.max_pain,
+                iv_skew=_legacy_safe_skew(opts_row), max_pain=opts_row.max_pain,
                 nearest_expiry=opts_row.nearest_expiry,
                 total_call_volume=opts_row.total_call_volume, total_put_volume=opts_row.total_put_volume,
                 total_call_oi=opts_row.total_call_oi, total_put_oi=opts_row.total_put_oi,
@@ -950,7 +1005,7 @@ def get_options_flow(ticker: str):
         return OptionsFlowResponse(
             ticker=row.ticker, analysis_date=row.analysis_date,
             pcr=row.pcr, unusual_volume_score=row.unusual_volume_score,
-            iv_skew=row.iv_skew, max_pain=row.max_pain,
+            iv_skew=_legacy_safe_skew(row), max_pain=row.max_pain,
             nearest_expiry=row.nearest_expiry,
             total_call_volume=row.total_call_volume, total_put_volume=row.total_put_volume,
             total_call_oi=row.total_call_oi, total_put_oi=row.total_put_oi,
@@ -976,14 +1031,7 @@ def get_all_hmm_states():
             (HMMRegimeState.run_date == subq.c.max_date)
         ).all()
 
-        return [
-            HMMResponse(
-                ticker=r.ticker, run_date=r.run_date,
-                current_state=r.current_state,
-                prob_bull=r.prob_bull, prob_bear=r.prob_bear, prob_sideways=r.prob_sideways,
-                trans_to_bull=r.trans_to_bull, trans_to_bear=r.trans_to_bear, trans_to_sideways=r.trans_to_sideways,
-            ) for r in results
-        ]
+        return [_hmm_response(r) for r in results]
     finally:
         session.close()
 
@@ -1093,60 +1141,76 @@ def get_event_study_summary():
 
     session = app.state.session_factory()
     try:
-        rows = session.query(EventStudyResult).all()
+        # Disclosure-anchored studies are the ones a follower could have
+        # traded on. Legacy trade-date-anchored rows are shown only until the
+        # first of those exist. Rows without CARs are "tried, not measurable".
+        measured = session.query(EventStudyResult).filter(EventStudyResult.car_20d.isnot(None))
+        rows = measured.filter(EventStudyResult.anchor == "disclosure").all()
+        if not rows:
+            rows = measured.filter(EventStudyResult.anchor.is_(None)).all()
         if not rows:
             return EventStudyAggregateResponse(n_events=0)
 
-        def _agg_horizon(values: list[float]) -> dict:
-            if len(values) < 2:
-                return {"mean": values[0] if values else None, "t_stat": None, "p_value": None, "win_rate": None}
-            arr = np.array(values)
-            mean = float(np.mean(arr))
-            se = float(np.std(arr, ddof=1) / np.sqrt(len(arr)))
-            t = mean / se if se > 0 else 0
-            p = float(2 * (1 - sp_stats.t.cdf(abs(t), df=len(arr) - 1)))
-            return {"mean": round(mean, 6), "t_stat": round(t, 4), "p_value": round(p, 4), "win_rate": round(float(np.mean(arr > 0)), 4)}
+        anchored = rows[0].anchor == "disclosure"
 
-        cars_1d = [r.car_1d for r in rows if r.car_1d is not None]
-        cars_5d = [r.car_5d for r in rows if r.car_5d is not None]
-        cars_10d = [r.car_10d for r in rows if r.car_10d is not None]
-        cars_20d = [r.car_20d for r in rows if r.car_20d is not None]
+        def _cluster(r):
+            # Signals disclosed on the same day share one market move: they
+            # are one observation for a significance test, not many.
+            return r.anchor_date.date() if (anchored and r.anchor_date) else ("event", r.id)
 
-        agg_5d = _agg_horizon(cars_5d)
-        agg_20d = _agg_horizon(cars_20d)
+        def _agg_horizon(subset, field: str) -> dict:
+            pairs = [(_cluster(r), getattr(r, field)) for r in subset if getattr(r, field) is not None]
+            if not pairs:
+                return {"mean": None, "t_stat": None, "p_value": None, "win_rate": None, "n_clusters": 0}
+            values = np.array([v for _, v in pairs])
+            by_cluster: dict = {}
+            for key, v in pairs:
+                by_cluster.setdefault(key, []).append(v)
+            cluster_means = np.array([np.mean(v) for v in by_cluster.values()])
+            out = {
+                "mean": round(float(np.mean(cluster_means)), 6),
+                "t_stat": None, "p_value": None,
+                "win_rate": round(float(np.mean(values > 0)), 4),
+                "n_clusters": len(cluster_means),
+            }
+            if len(cluster_means) >= 2:
+                se = float(np.std(cluster_means, ddof=1) / np.sqrt(len(cluster_means)))
+                t = float(np.mean(cluster_means)) / se if se > 0 else 0.0
+                out["t_stat"] = round(t, 4)
+                out["p_value"] = round(float(2 * sp_stats.t.sf(abs(t), df=len(cluster_means) - 1)), 4)
+            return out
+
+        agg_5d = _agg_horizon(rows, "car_5d")
+        agg_20d = _agg_horizon(rows, "car_20d")
         sig_count = sum(1 for r in rows if r.is_significant)
 
         # By direction
         by_dir = {}
         for d in ["buy", "sell"]:
             sub = [r for r in rows if r.direction == d]
-            sub_5d = [r.car_5d for r in sub if r.car_5d is not None]
-            sub_20d = [r.car_20d for r in sub if r.car_20d is not None]
             by_dir[d] = {
                 "n": len(sub),
-                "car_5d": _agg_horizon(sub_5d),
-                "car_20d": _agg_horizon(sub_20d),
+                "car_5d": _agg_horizon(sub, "car_5d"),
+                "car_20d": _agg_horizon(sub, "car_20d"),
             }
 
         # By source
         by_src = {}
-        for s in ["insider", "congressional"]:
+        for s in ["insider", "congressional", "institutional"]:
             sub = [r for r in rows if r.source_type == s]
-            sub_5d = [r.car_5d for r in sub if r.car_5d is not None]
-            sub_20d = [r.car_20d for r in sub if r.car_20d is not None]
             by_src[s] = {
                 "n": len(sub),
-                "car_5d": _agg_horizon(sub_5d),
-                "car_20d": _agg_horizon(sub_20d),
+                "car_5d": _agg_horizon(sub, "car_5d"),
+                "car_20d": _agg_horizon(sub, "car_20d"),
             }
 
         return EventStudyAggregateResponse(
             n_events=len(rows),
             n_significant=sig_count,
             pct_significant=round(sig_count / len(rows), 4) if rows else None,
-            mean_car_1d=_agg_horizon(cars_1d).get("mean"),
+            mean_car_1d=_agg_horizon(rows, "car_1d").get("mean"),
             mean_car_5d=agg_5d.get("mean"),
-            mean_car_10d=_agg_horizon(cars_10d).get("mean"),
+            mean_car_10d=_agg_horizon(rows, "car_10d").get("mean"),
             mean_car_20d=agg_20d.get("mean"),
             t_stat_5d=agg_5d.get("t_stat"),
             p_value_5d=agg_5d.get("p_value"),
@@ -1156,6 +1220,8 @@ def get_event_study_summary():
             win_rate_20d=agg_20d.get("win_rate"),
             by_direction=by_dir,
             by_source=by_src,
+            n_clusters=agg_20d.get("n_clusters"),
+            anchor="disclosure" if anchored else "trade_date",
         )
     finally:
         session.close()
@@ -1195,10 +1261,23 @@ def get_performance_summary():
     session = app.state.session_factory()
     try:
         total_events = session.query(SmartMoneyEvent).count()
-        rows = session.query(SignalPerformance).all()
+        all_rows = session.query(SignalPerformance).all()
+
+        # entry_price 0 marks a signal with no price data. It has no real
+        # return and must not enter any statistic.
+        rows = [r for r in all_rows if r.entry_price]
+        unpriced = len(all_rows) - len(rows)
+
+        # Headline numbers cover insider and congressional signals only.
+        # 13F rows all share a handful of filing dates and are entered ~45
+        # days after the quarter they describe; pooled in, they outnumber and
+        # drown the timely signals. They keep their own by-source line.
+        headline = [r for r in rows if r.source_type != "institutional"]
 
         if not rows:
-            return PerformanceSummaryResponse(total_signals=total_events, tracked_signals=0)
+            return PerformanceSummaryResponse(
+                total_signals=total_events, tracked_signals=0, unpriced_signals=unpriced
+            )
 
         def _agg(subset, label=""):
             r5 = [r.return_5d for r in subset if r.return_5d is not None]
@@ -1215,18 +1294,18 @@ def get_performance_summary():
                 "avg_return_60d": round(float(np.mean(r60)), 6) if r60 else None,
             }
 
-        overall = _agg(rows)
+        overall = _agg(headline)
 
         # By direction
         by_dir = {}
         for d in ["buy", "sell"]:
-            sub = [r for r in rows if r.direction == d]
+            sub = [r for r in headline if r.direction == d]
             if sub:
                 by_dir[d] = _agg(sub)
 
         # By source
         by_src = {}
-        for s in ["insider", "congressional"]:
+        for s in ["insider", "congressional", "institutional"]:
             sub = [r for r in rows if r.source_type == s]
             if sub:
                 by_src[s] = _agg(sub)
@@ -1234,18 +1313,18 @@ def get_performance_summary():
         # By conviction bucket
         by_conv = {}
         for label, lo, hi in [("low", 0, 0.4), ("medium", 0.4, 0.6), ("high", 0.6, 1.01)]:
-            sub = [r for r in rows if r.conviction is not None and lo <= r.conviction < hi]
+            sub = [r for r in headline if r.conviction is not None and lo <= r.conviction < hi]
             if sub:
                 by_conv[label] = _agg(sub)
 
         # Top winners/losers by 20d return
-        with_20d = [r for r in rows if r.return_20d is not None]
+        with_20d = [r for r in headline if r.return_20d is not None]
         sorted_by_ret = sorted(with_20d, key=lambda r: r.return_20d, reverse=True)
         top_winners = [{"ticker": r.ticker, "direction": r.direction, "return_20d": round(r.return_20d, 4),
-                        "conviction": round(r.conviction, 4) if r.conviction else None}
+                        "conviction": round(r.conviction, 4) if r.conviction is not None else None}
                        for r in sorted_by_ret[:5]]
         top_losers = [{"ticker": r.ticker, "direction": r.direction, "return_20d": round(r.return_20d, 4),
-                       "conviction": round(r.conviction, 4) if r.conviction else None}
+                       "conviction": round(r.conviction, 4) if r.conviction is not None else None}
                       for r in sorted_by_ret[-5:]]
 
         return PerformanceSummaryResponse(
@@ -1261,6 +1340,8 @@ def get_performance_summary():
             by_conviction_bucket=by_conv,
             top_winners=top_winners,
             top_losers=top_losers,
+            unpriced_signals=unpriced,
+            headline_basis="insider + congressional",
         )
     finally:
         session.close()
@@ -1496,7 +1577,7 @@ def get_dashboard():
 
 
 @app.post("/api/ml/xgboost/train", dependencies=[Depends(require_admin)])
-def train_xgboost():
+def train_xgboost(include_institutional: bool = False):
     """Train XGBoost classifier on historical signals. Admin-only."""
     from src.analysis.xgboost_classifier import XGBoostSignalClassifier
 
@@ -1515,12 +1596,17 @@ def train_xgboost():
 
         perf_rows = {p.event_id: p for p in session.query(SignalPerformance).all()}
         tickers = {e.ticker for e in events}
-        model_rows = _latest_xgb_model_rows(session, tickers)
+        model_rows = _xgb_model_history(session, tickers)
 
         records = []
         for evt in events:
             perf = perf_rows.get(evt.id)
-            if not perf or perf.return_20d is None:
+            # Unpriced signals (entry_price 0) have no real outcome to learn from
+            if not perf or perf.return_20d is None or not perf.entry_price:
+                continue
+            # 13F rows share a handful of filing dates: thousands of them are
+            # a few observations, and they would swamp everything else.
+            if not include_institutional and evt.source_type.value == "institutional":
                 continue
             enr = evt.enrichment
             cs = evt.conviction_score
@@ -1561,7 +1647,7 @@ def predict_xgboost(ticker: str):
 
         enr = session.query(Enrichment).filter(Enrichment.event_id == evt.id).first()
         cs = session.query(ConvictionScore).filter(ConvictionScore.event_id == evt.id).first()
-        model_rows = _latest_xgb_model_rows(session, {evt.ticker})
+        model_rows = _xgb_model_history(session, {evt.ticker})
         features = _build_xgb_record(evt, enr, cs, model_rows)
 
         prediction = clf.predict(features)
@@ -1574,60 +1660,67 @@ def predict_xgboost(ticker: str):
         session.close()
 
 
-def _latest_xgb_model_rows(session, tickers: set[str]) -> dict[str, dict]:
-    def latest_by_ticker(model, date_attr):
+# Model outputs are written a few minutes after the signal that triggered
+# them is ingested, so "as of the signal" means "up to a day after it was
+# stored". Anything later was computed with prices from the outcome window.
+XGB_FEATURE_WINDOW = timedelta(days=1)
+
+
+def _xgb_model_history(session, tickers: set[str]) -> dict[str, dict[str, list]]:
+    """Every stored model row per ticker, oldest first, for as-of lookups."""
+    def history(model, date_attr):
         rows = (
             session.query(model)
             .filter(model.ticker.in_(tickers))
-            .order_by(model.ticker, desc(date_attr))
+            .order_by(model.ticker, date_attr)
             .all()
         )
-        latest = {}
+        by_ticker: dict[str, list] = {}
         for row in rows:
-            latest.setdefault(row.ticker, row)
-        return latest
+            by_ticker.setdefault(row.ticker, []).append((getattr(row, date_attr.key), row))
+        return by_ticker
 
     return {
-        "hmm": latest_by_ticker(HMMRegimeState, HMMRegimeState.run_date),
-        "garch": latest_by_ticker(GARCHForecast, GARCHForecast.run_date),
-        "fama_french": latest_by_ticker(FamaFrenchExposure, FamaFrenchExposure.run_date),
-        "copula": latest_by_ticker(CopulaTailRiskResult, CopulaTailRiskResult.run_date),
-        "news": latest_by_ticker(NewsSentimentResult, NewsSentimentResult.run_date),
+        "hmm": history(HMMRegimeState, HMMRegimeState.run_date),
+        "garch": history(GARCHForecast, GARCHForecast.run_date),
+        "fama_french": history(FamaFrenchExposure, FamaFrenchExposure.run_date),
+        "copula": history(CopulaTailRiskResult, CopulaTailRiskResult.run_date),
+        "news": history(NewsSentimentResult, NewsSentimentResult.run_date),
     }
+
+
+def _as_of(history: list, cutoff: datetime):
+    """Latest row dated on or before `cutoff` (history is oldest-first)."""
+    chosen = None
+    for row_date, row in history:
+        if row_date is None or row_date > cutoff:
+            break
+        chosen = row
+    return chosen
 
 
 def _build_xgb_record(evt, enr, cs, model_rows: dict[str, dict]) -> dict:
-    ticker = evt.ticker
-    hmm = model_rows.get("hmm", {}).get(ticker)
-    garch = model_rows.get("garch", {}).get(ticker)
-    ff = model_rows.get("fama_french", {}).get(ticker)
-    copula = model_rows.get("copula", {}).get(ticker)
-    news = model_rows.get("news", {}).get(ticker)
+    """Feature record for one signal, using only model output that existed
+    when the signal was scored. Taking each ticker's LATEST model row instead
+    gave old signals features computed after their 20-day outcome — e.g. a
+    Fama-French alpha estimated over the very window being predicted."""
+    from src.analysis.xgb_features import build_feature_record
 
-    return {
-        "date": evt.trade_date.isoformat() if evt.trade_date else None,
-        "pe_ratio": enr.pe_ratio if enr else None,
-        "market_cap": enr.market_cap if enr else None,
-        "revenue_growth_yoy": enr.revenue_growth_yoy if enr else None,
-        "eps_latest": enr.eps_latest if enr else None,
-        "eps_growth_yoy": enr.eps_growth_yoy if enr else None,
-        "short_ratio": enr.short_ratio if enr else None,
-        "momentum_30d": enr.momentum_30d if enr else None,
-        "momentum_90d": enr.momentum_90d if enr else None,
-        "rsi_14d": enr.rsi_14d if enr else None,
-        "drawdown_from_52w_high": enr.drawdown_from_52w_high if enr else None,
-        "avg_volume_30d": enr.avg_volume_30d if enr else None,
-        "hmm_bull_prob": hmm.prob_bull if hmm else None,
-        "hmm_bear_prob": hmm.prob_bear if hmm else None,
-        "garch_current_vol": garch.current_vol_annual if garch else None,
-        "ff_alpha": ff.alpha_annual if ff else None,
-        "copula_tail_score": copula.tail_risk_score if copula else None,
-        "news_volume_z": news.news_volume_z if news else None,
-        "news_sentiment_mean": news.news_sentiment_mean if news else None,
-        "news_sentiment_trend_3d": news.news_sentiment_trend_3d if news else None,
-        "signal_score": cs.signal_score if cs else None,
-        "fundamental_score": cs.fundamental_score if cs else None,
-        "macro_modifier": cs.macro_modifier if cs else None,
-        "conviction": cs.conviction if cs else None,
-        "direction_encoded": 1.0 if evt.direction.value == "buy" else -1.0,
-    }
+    ticker = evt.ticker
+    cutoff = (getattr(evt, "created_at", None) or datetime.utcnow()) + XGB_FEATURE_WINDOW
+
+    def row(kind):
+        return _as_of(model_rows.get(kind, {}).get(ticker, []), cutoff)
+
+    garch, ff, copula = row("garch"), row("fama_french"), row("copula")
+    return build_feature_record(
+        direction=evt.direction.value,
+        enrichment=enr,
+        conviction=cs,
+        hmm=row("hmm"),
+        garch_vol=garch.current_vol_annual if garch else None,
+        ff_alpha=ff.alpha_annual if ff else None,
+        copula_score=copula.tail_risk_score if copula else None,
+        news=row("news"),
+        date=evt.trade_date.isoformat() if evt.trade_date else None,
+    )

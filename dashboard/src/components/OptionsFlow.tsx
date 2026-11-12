@@ -70,7 +70,7 @@ export const OptionsFlow: React.FC<Props> = ({ data }) => {
 
         {/* IV Skew */}
         <div style={{ background: '#161b22', borderRadius: 8, padding: 12, border: '1px solid #30363d' }}>
-          <div style={{ fontSize: 10, color: '#8b949e', marginBottom: 4 }}>IV Skew</div>
+          <div style={{ fontSize: 10, color: '#8b949e', marginBottom: 4 }}>IV Skew (put wing − call wing)</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: skewColor(data.iv_skew) }}>
             {data.iv_skew !== null ? `${(data.iv_skew * 100).toFixed(1)}%` : 'N/A'}
           </div>

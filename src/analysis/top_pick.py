@@ -16,7 +16,7 @@ a pick from the existing database, even when no new signals arrived today.
 from datetime import datetime, timedelta
 
 import structlog
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from src.models.database import (
     ConvictionScore,
@@ -25,6 +25,7 @@ from src.models.database import (
     EnsembleScoreResult,
     MonteCarloResult,
     SmartMoneyEvent,
+    SourceType,
 )
 
 logger = structlog.get_logger()
@@ -37,6 +38,11 @@ W_MC_PROB = 0.20
 # Bonus per additional distinct actor buying the same ticker (capped)
 CLUSTER_BONUS_PER_ACTOR = 0.02
 CLUSTER_BONUS_CAP = 0.06
+
+
+def _signal_date(event) -> datetime:
+    """When the trade became public (falls back to the trade date)."""
+    return event.disclosure_date or event.trade_date
 
 
 def select_top_pick(session_factory, lookback_days: int = 7) -> dict | None:
@@ -54,12 +60,18 @@ def select_top_pick(session_factory, lookback_days: int = 7) -> dict | None:
     session = session_factory()
     try:
         cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+        # "Recent" means recently DISCLOSED — that is when a follower can act.
+        # Filtering on trade_date silently dropped every congressional trade
+        # (disclosed up to 45 days after the trade). 13F holdings changes
+        # describe a quarter that ended weeks earlier and stay excluded.
+        signal_date = func.coalesce(SmartMoneyEvent.disclosure_date, SmartMoneyEvent.trade_date)
         rows = (
             session.query(SmartMoneyEvent, ConvictionScore, Enrichment)
             .outerjoin(ConvictionScore, SmartMoneyEvent.id == ConvictionScore.event_id)
             .outerjoin(Enrichment, SmartMoneyEvent.id == Enrichment.event_id)
-            .filter(SmartMoneyEvent.trade_date >= cutoff)
+            .filter(signal_date >= cutoff)
             .filter(SmartMoneyEvent.direction == Direction.BUY)
+            .filter(SmartMoneyEvent.source_type != SourceType.INSTITUTIONAL)
             .all()
         )
         if not rows:
@@ -82,7 +94,7 @@ def select_top_pick(session_factory, lookback_days: int = 7) -> dict | None:
             if enr:
                 t["sector"] = t["sector"] or enr.sector
                 t["price"] = t["price"] or enr.price_at_signal
-            if t["latest_event"] is None or event.trade_date > t["latest_event"].trade_date:
+            if t["latest_event"] is None or _signal_date(event) > _signal_date(t["latest_event"]):
                 t["latest_event"] = event
 
         candidates = []
@@ -148,6 +160,7 @@ def select_top_pick(session_factory, lookback_days: int = 7) -> dict | None:
                 "price_at_signal": info["price"],
                 "latest_actor": latest.actor if latest else None,
                 "latest_trade_date": latest.trade_date.isoformat() if latest else None,
+                "latest_disclosure_date": _signal_date(latest).isoformat() if latest else None,
                 "source_type": latest.source_type.value if latest else None,
             })
 

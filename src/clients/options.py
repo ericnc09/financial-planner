@@ -5,7 +5,34 @@ import numpy as np
 import structlog
 import yfinance as yf
 
+from src.clients.symbols import yahoo_candidates
+
 logger = structlog.get_logger()
+
+
+# Quotes outside these bounds are stale or broken (Yahoo reports implied
+# volatilities like 0.00001 or 500 for strikes that never trade).
+IV_RANGE = (0.01, 5.0)
+MIN_OPEN_INTEREST = 10
+# Below this many contracts across calls and puts a put/call ratio is noise.
+MIN_TOTAL_VOLUME = 100
+MAX_PCR = 10.0
+# Bumped whenever the definition of pcr / iv_skew changes, so percentile
+# references never mix rows computed differently.
+METHOD_VERSION = 2
+
+
+def percentile_rank(value: float | None, reference) -> float | None:
+    """Share of `reference` at or below `value` (mid-rank for ties), 0..1."""
+    if value is None:
+        return None
+    ref = np.asarray([r for r in reference if r is not None], dtype=float)
+    ref = ref[np.isfinite(ref)]
+    if len(ref) == 0:
+        return None
+    below = float(np.sum(ref < value))
+    equal = float(np.sum(ref == value))
+    return (below + 0.5 * equal) / len(ref)
 
 
 class OptionsClient:
@@ -20,49 +47,49 @@ class OptionsClient:
             return None
 
     def _analyze(self, ticker: str) -> dict | None:
-        t = yf.Ticker(ticker)
+        import pandas as pd
 
-        # Get available expirations
-        try:
-            expirations = t.options
-        except Exception:
-            return None
-
+        # Resolve the price source's spelling of the symbol (BRK.B -> BRK-B)
+        t, expirations = None, None
+        for symbol in yahoo_candidates(ticker) or [ticker]:
+            try:
+                candidate = yf.Ticker(symbol)
+                exps = candidate.options
+            except Exception:
+                continue
+            if exps:
+                t, expirations = candidate, exps
+                break
         if not expirations:
             return None
 
-        # Pick nearest monthly expiration (14-60 days out)
+        # Nearest expirations 14-60 days out (up to two, pooled for volume).
         today = datetime.now().date()
-        target_exp = None
+        in_window = []
         for exp_str in expirations:
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
-            days_out = (exp_date - today).days
-            if 14 <= days_out <= 60:
-                target_exp = exp_str
-                break
+            if 14 <= (exp_date - today).days <= 60:
+                in_window.append(exp_str)
+        targets = in_window[:2] or [expirations[0]]
 
-        # Fallback: take the first available expiration
-        if not target_exp:
-            target_exp = expirations[0]
-
-        # Fetch option chain
-        try:
-            chain = t.option_chain(target_exp)
-        except Exception:
+        chains = []
+        for exp_str in targets:
+            try:
+                chains.append(t.option_chain(exp_str))
+            except Exception:
+                continue
+        if not chains:
             return None
 
-        calls = chain.calls
-        puts = chain.puts
+        target_exp = targets[0]
+        calls = pd.concat([c.calls for c in chains], ignore_index=True)
+        puts = pd.concat([c.puts for c in chains], ignore_index=True)
+        near_calls, near_puts = chains[0].calls, chains[0].puts
 
         if calls.empty and puts.empty:
             return None
 
-        # Current price
-        try:
-            info = t.info or {}
-            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-        except Exception:
-            current_price = None
+        current_price = self._current_price(t)
 
         # Compute metrics
         total_call_volume = int(calls["volume"].sum()) if "volume" in calls.columns else 0
@@ -71,8 +98,8 @@ class OptionsClient:
         total_put_oi = int(puts["openInterest"].sum()) if "openInterest" in puts.columns else 0
 
         pcr = self._compute_pcr(total_call_volume, total_put_volume)
-        iv_skew = self._compute_iv_skew(calls, puts, current_price)
-        max_pain = self._compute_max_pain(calls, puts)
+        iv_skew = self._compute_iv_skew(near_calls, near_puts, current_price)
+        max_pain = self._compute_max_pain(near_calls, near_puts)
         unusual_volume_score = self._compute_unusual_volume(
             total_call_volume, total_put_volume, total_call_oi, total_put_oi
         )
@@ -89,14 +116,30 @@ class OptionsClient:
             "total_put_volume": total_put_volume,
             "total_call_oi": total_call_oi,
             "total_put_oi": total_put_oi,
+            "method_version": METHOD_VERSION,
         }
 
     @staticmethod
-    def _compute_pcr(call_volume: int, put_volume: int) -> float | None:
-        """Put/call volume ratio. < 0.7 = bullish, > 1.0 = bearish."""
-        if call_volume <= 0:
+    def _current_price(t) -> float | None:
+        try:
+            price = t.fast_info.get("last_price") or t.fast_info.get("lastPrice")
+            if price and price > 0:
+                return float(price)
+        except Exception:
+            pass
+        try:
+            info = t.info or {}
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            return float(price) if price and price > 0 else None
+        except Exception:
             return None
-        return round(put_volume / call_volume, 4)
+
+    @staticmethod
+    def _compute_pcr(call_volume: int, put_volume: int) -> float | None:
+        """Put/call volume ratio, or None when volume is too thin to mean anything."""
+        if call_volume <= 0 or call_volume + put_volume < MIN_TOTAL_VOLUME:
+            return None
+        return round(min(put_volume / call_volume, MAX_PCR), 4)
 
     @staticmethod
     def _compute_unusual_volume(
@@ -115,7 +158,19 @@ class OptionsClient:
 
     @staticmethod
     def _compute_iv_skew(calls, puts, current_price: float | None) -> float | None:
-        """IV skew: avg IV of OTM puts vs ATM calls. Positive = bearish skew."""
+        """Wing skew: (OTM-put IV - OTM-call IV) / ATM IV.
+
+        Put wing = strikes at 90-97.5% of spot, call wing = 102.5-110%, ATM =
+        within 2.5% of spot, all at the nearest expiry and only on quotes
+        with a plausible IV and real open interest.
+
+        Comparing OTM puts with ATM calls (the previous definition) measures
+        the ordinary volatility smile, which is positive for nearly every
+        stock; comparing the two wings at matching distance isolates how much
+        more the market pays for downside than for upside. Even so the level
+        is usually above zero, so consumers should read it relative to other
+        tickers, not against a fixed threshold.
+        """
         if current_price is None or current_price <= 0:
             return None
 
@@ -123,27 +178,35 @@ class OptionsClient:
         if iv_col not in calls.columns or iv_col not in puts.columns:
             return None
 
-        # ATM calls: strikes within 5% of current price
-        atm_calls = calls[
-            (calls["strike"] >= current_price * 0.95) &
-            (calls["strike"] <= current_price * 1.05)
-        ]
-        atm_call_iv = atm_calls[iv_col].dropna().mean() if not atm_calls.empty else None
+        def clean(df):
+            df = df[(df[iv_col] > IV_RANGE[0]) & (df[iv_col] < IV_RANGE[1])]
+            if "openInterest" in df.columns:
+                df = df[df["openInterest"].fillna(0) >= MIN_OPEN_INTEREST]
+            return df
 
-        # OTM puts: strikes below 95% of current price
-        otm_puts = puts[puts["strike"] < current_price * 0.95]
-        otm_put_iv = otm_puts[iv_col].dropna().mean() if not otm_puts.empty else None
+        calls, puts = clean(calls), clean(puts)
+        call_m = calls["strike"] / current_price
+        put_m = puts["strike"] / current_price
 
-        if atm_call_iv is None or otm_put_iv is None or atm_call_iv <= 0:
+        atm = np.concatenate([
+            calls[(call_m - 1).abs() <= 0.025][iv_col].values,
+            puts[(put_m - 1).abs() <= 0.025][iv_col].values,
+        ])
+        put_wing = puts[(put_m >= 0.90) & (put_m <= 0.975)][iv_col].values
+        call_wing = calls[(call_m >= 1.025) & (call_m <= 1.10)][iv_col].values
+
+        if len(atm) < 1 or len(put_wing) < 2 or len(call_wing) < 2:
+            return None
+        atm_iv = float(np.mean(atm))
+        if atm_iv <= 0:
             return None
 
-        # Positive skew = puts more expensive = bearish sentiment
-        skew = (otm_put_iv - atm_call_iv) / atm_call_iv
+        skew = (float(np.mean(put_wing)) - float(np.mean(call_wing))) / atm_iv
         return round(float(skew), 4)
 
     @staticmethod
     def _compute_max_pain(calls, puts) -> float | None:
-        """Strike where total option holder losses are maximized (max pain theory)."""
+        """Strike at which option holders in aggregate are paid the least."""
         if calls.empty and puts.empty:
             return None
 
@@ -151,37 +214,19 @@ class OptionsClient:
         if oi_col not in calls.columns or oi_col not in puts.columns:
             return None
 
-        # Get all unique strikes
-        all_strikes = sorted(
-            set(calls["strike"].tolist() + puts["strike"].tolist())
-        )
-        if not all_strikes:
+        call_k = calls["strike"].to_numpy(dtype=float)
+        put_k = puts["strike"].to_numpy(dtype=float)
+        call_oi = np.nan_to_num(calls[oi_col].to_numpy(dtype=float))
+        put_oi = np.nan_to_num(puts[oi_col].to_numpy(dtype=float))
+
+        strikes = np.unique(np.concatenate([call_k, put_k]))
+        if len(strikes) == 0:
             return None
 
-        min_pain = float("inf")
-        max_pain_strike = all_strikes[0]
-
-        for strike in all_strikes:
-            # Call holders lose money when price < strike
-            call_pain = 0
-            for _, row in calls.iterrows():
-                oi = row.get(oi_col, 0) or 0
-                if strike > row["strike"]:
-                    call_pain += (strike - row["strike"]) * oi
-
-            # Put holders lose money when price > strike
-            put_pain = 0
-            for _, row in puts.iterrows():
-                oi = row.get(oi_col, 0) or 0
-                if strike < row["strike"]:
-                    put_pain += (row["strike"] - strike) * oi
-
-            total_pain = call_pain + put_pain
-            if total_pain < min_pain:
-                min_pain = total_pain
-                max_pain_strike = strike
-
-        return float(max_pain_strike)
+        # Payout to holders if the stock settles at each candidate strike
+        call_payout = (np.maximum(strikes[:, None] - call_k[None, :], 0) * call_oi[None, :]).sum(axis=1)
+        put_payout = (np.maximum(put_k[None, :] - strikes[:, None], 0) * put_oi[None, :]).sum(axis=1)
+        return float(strikes[int(np.argmin(call_payout + put_payout))])
 
     async def close(self):
         pass

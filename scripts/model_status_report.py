@@ -32,6 +32,7 @@ from config.settings import Settings
 from src.analysis.xgboost_classifier import DEFAULT_MODEL_PATH, XGBoostSignalClassifier
 from src.backtesting.validator import (
     ScoreCalibrator,
+    annualized_sharpe,
     bootstrap_metrics,
     calibration_analysis,
     deflated_sharpe_ratio,
@@ -132,14 +133,13 @@ def _bucket_summary(rows: list[sqlite3.Row], bucket_key: str, return_key: str) -
     return out
 
 
-def _annualized_sharpe(returns: list[float], hold_days: int = 20) -> float | None:
-    if len(returns) < 3:
+HOLD_DAYS = 20  # every return in this report is a 20-trading-day return
+
+
+def _annualized_sharpe(returns: list[float], hold_days: int = HOLD_DAYS) -> float | None:
+    if len(returns) < 3 or float(np.std(np.array(returns, dtype=float), ddof=1)) <= 0:
         return None
-    arr = np.array(returns, dtype=float)
-    std = float(np.std(arr, ddof=1))
-    if std <= 0:
-        return None
-    return float(np.mean(arr) / std * np.sqrt(252 / hold_days))
+    return annualized_sharpe(returns, hold_days)
 
 
 def _validation_gates(report: dict) -> dict:
@@ -256,18 +256,19 @@ def main() -> int:
             SELECT cs.conviction AS score, sp.return_20d AS realized_return
             FROM conviction_scores cs
             JOIN signal_performance sp ON sp.event_id = cs.event_id
-            WHERE sp.return_20d IS NOT NULL
+            WHERE sp.return_20d IS NOT NULL AND sp.entry_price > 0
         """)
 
         ensemble_perf_rows = _query(conn, f"""
             SELECT es.total_score AS score,
                    es.run_date AS date,
                    es.recommendation AS recommendation,
+                   date(sp.entry_date) AS entry_day,
                    sp.return_20d AS realized_return,
                    {", ".join(f"es.{col} AS {component}" for component, col in ENSEMBLE_COMPONENT_COLUMNS.items())}
             FROM ({latest_ensemble_sql}) es
             JOIN signal_performance sp ON sp.event_id = es.event_id
-            WHERE sp.return_20d IS NOT NULL
+            WHERE sp.return_20d IS NOT NULL AND sp.entry_price > 0
         """)
 
         component_correlations = {}
@@ -283,21 +284,21 @@ def main() -> int:
                    sp.return_20d AS realized_return
             FROM signal_performance sp
             JOIN conviction_scores cs ON cs.event_id = sp.event_id
-            WHERE sp.return_20d IS NOT NULL
+            WHERE sp.return_20d IS NOT NULL AND sp.entry_price > 0
         """)
 
         source_rows = _query(conn, """
             SELECT e.source_type AS bucket, sp.return_20d AS realized_return
             FROM smart_money_events e
             JOIN signal_performance sp ON sp.event_id = e.id
-            WHERE sp.return_20d IS NOT NULL
+            WHERE sp.return_20d IS NOT NULL AND sp.entry_price > 0
         """)
 
         direction_rows = _query(conn, """
             SELECT e.direction AS bucket, sp.return_20d AS realized_return
             FROM smart_money_events e
             JOIN signal_performance sp ON sp.event_id = e.id
-            WHERE sp.return_20d IS NOT NULL
+            WHERE sp.return_20d IS NOT NULL AND sp.entry_price > 0
         """)
 
         missing_claimed_components = [
@@ -328,10 +329,19 @@ def main() -> int:
         all_sharpe = _annualized_sharpe(all_20d_returns)
         buy_sharpe = _annualized_sharpe(buy_20d_returns)
         n_strategies = len(ENSEMBLE_COMPONENT_COLUMNS) + 4
+        # Signals entered on the same day share one market move, so the
+        # number of distinct entry days — not the number of signals — is the
+        # sample size the significance test is entitled to.
+        all_days = len({r["entry_day"] for r in ensemble_perf_rows if r["realized_return"] is not None})
+        buy_days = len({
+            r["entry_day"] for r in ensemble_perf_rows
+            if r["recommendation"] == "buy" and r["realized_return"] is not None
+        })
         dsr_all = (
             deflated_sharpe_ratio(
                 observed_sharpe=all_sharpe,
-                n_observations=len(all_20d_returns),
+                n_observations=all_days,
+                periods_per_year=252 / HOLD_DAYS,
                 n_strategies_tried=n_strategies,
                 skewness=float(stats.skew(all_20d_returns)) if len(all_20d_returns) >= 3 else 0.0,
                 kurtosis=float(stats.kurtosis(all_20d_returns, fisher=False)) if len(all_20d_returns) >= 4 else 3.0,
@@ -341,7 +351,8 @@ def main() -> int:
         dsr_buy = (
             deflated_sharpe_ratio(
                 observed_sharpe=buy_sharpe,
-                n_observations=len(buy_20d_returns),
+                n_observations=buy_days,
+                periods_per_year=252 / HOLD_DAYS,
                 n_strategies_tried=n_strategies,
                 skewness=float(stats.skew(buy_20d_returns)) if len(buy_20d_returns) >= 3 else 0.0,
                 kurtosis=float(stats.kurtosis(buy_20d_returns, fisher=False)) if len(buy_20d_returns) >= 4 else 3.0,
@@ -380,6 +391,7 @@ def main() -> int:
                 "deflated_sharpe_all": dsr_all,
                 "deflated_sharpe_buy_recommendations": dsr_buy,
                 "n_strategies_tried_assumption": n_strategies,
+                "distinct_entry_days": {"all": all_days, "buy_recommendations": buy_days},
             },
             "xgboost": _xgboost_status(),
         }

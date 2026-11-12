@@ -61,7 +61,8 @@ export const MeanVarianceChart: React.FC = () => {
         Portfolio Optimization
       </div>
       <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 16 }}>
-        Mean-Variance across {data.n_assets} signal tickers
+        Mean-Variance across {data.n_assets} signal tickers · returns are in-sample
+        estimates from one year of prices, not forecasts
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>

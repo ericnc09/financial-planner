@@ -23,6 +23,29 @@ import structlog
 
 logger = structlog.get_logger()
 
+# Holding period, in trading days, of the returns these functions are fed.
+# Every caller passes 20-day realized returns unless it says otherwise.
+DEFAULT_HOLD_DAYS = 20
+
+
+def annualized_sharpe(returns, hold_days: int = DEFAULT_HOLD_DAYS) -> float:
+    """Annualized Sharpe ratio of per-trade returns held `hold_days` trading days.
+
+    There are 252 / hold_days such periods in a year, so the per-period ratio
+    scales by sqrt(252 / hold_days). Scaling 20-day returns by sqrt(252), as
+    if they were daily, overstates the ratio about 4.5x.
+
+    Trades that overlap in time are not independent, so even this figure is
+    an upper bound on what a real account would have realized.
+    """
+    arr = np.asarray(list(returns), dtype=float)
+    if len(arr) < 2:
+        return 0.0
+    std = float(np.std(arr, ddof=1))
+    if std <= 0:
+        return 0.0
+    return float(np.mean(arr) / std * math.sqrt(252 / max(hold_days, 1)))
+
 
 # ── D1: Out-of-Sample Split ───────────────────────────────────────────────────
 
@@ -46,7 +69,11 @@ def oos_split(
     return train, test
 
 
-def evaluate_split(records: list[dict], return_field: str = "realized_return") -> dict:
+def evaluate_split(
+    records: list[dict],
+    return_field: str = "realized_return",
+    hold_days: int = DEFAULT_HOLD_DAYS,
+) -> dict:
     """Compute basic metrics on a set of records with realized returns."""
     returns = [r[return_field] for r in records if r.get(return_field) is not None]
     if not returns:
@@ -57,12 +84,8 @@ def evaluate_split(records: list[dict], return_field: str = "realized_return") -
     avg_ret = sum(returns) / n
     win_rate = len(wins) / n
 
-    if n > 1:
-        std = float(np.std(returns, ddof=1))
-        sharpe = (avg_ret / std * math.sqrt(252)) if std > 0 else 0.0
-    else:
-        std = 0.0
-        sharpe = 0.0
+    std = float(np.std(returns, ddof=1)) if n > 1 else 0.0
+    sharpe = annualized_sharpe(returns, hold_days)
 
     return {
         "n": n,
@@ -78,6 +101,7 @@ def run_oos_validation(
     train_pct: float = 0.70,
     score_field: str = "ensemble_score",
     return_field: str = "realized_return",
+    hold_days: int = DEFAULT_HOLD_DAYS,
 ) -> dict:
     """
     D1: Full OOS validation report.
@@ -93,8 +117,8 @@ def run_oos_validation(
 
     train, test = oos_split(records, train_pct)
 
-    train_metrics = evaluate_split(train, return_field)
-    test_metrics = evaluate_split(test, return_field)
+    train_metrics = evaluate_split(train, return_field, hold_days)
+    test_metrics = evaluate_split(test, return_field, hold_days)
 
     sharpe_decay = None
     wr_decay = None
@@ -218,11 +242,14 @@ def model_contribution_analysis(
     score_fn: Callable[[dict, list[str]], float],
     model_names: list[str],
     return_field: str = "realized_return",
+    hold_days: int = DEFAULT_HOLD_DAYS,
 ) -> dict:
     """
     D3: Run backtest excluding each model one-at-a-time.
 
-    If removing a model improves Sharpe, that model adds noise.
+    If removing a model improves Sharpe, that model adds noise. The baseline
+    is the same selection rule (score >= 50) with every model included, so
+    the only difference between baseline and variant is the one model.
 
     Args:
         records: Signal records with component scores and realized returns.
@@ -237,8 +264,11 @@ def model_contribution_analysis(
     if len(records) < 20:
         return {"status": "insufficient_data", "n": len(records)}
 
-    returns = [r[return_field] for r in records if r.get(return_field) is not None]
-    baseline = _returns_to_metrics(returns)
+    baseline_returns = [
+        r[return_field] for r in records
+        if r.get(return_field) is not None and score_fn(r, []) >= 50
+    ]
+    baseline = _returns_to_metrics(baseline_returns, hold_days)
 
     contributions = {}
     for model in model_names:
@@ -253,7 +283,7 @@ def model_contribution_analysis(
             if loo_score >= 50:
                 loo_returns.append(ret)
 
-        loo_metrics = _returns_to_metrics(loo_returns)
+        loo_metrics = _returns_to_metrics(loo_returns, hold_days)
         delta_sharpe = loo_metrics["sharpe_ratio"] - baseline["sharpe_ratio"]
 
         contributions[model] = {
@@ -324,14 +354,19 @@ def bootstrap_metrics(
     n_bootstrap: int = 2000,
     ci: float = 0.95,
     seed: int = 42,
+    hold_days: int = DEFAULT_HOLD_DAYS,
 ) -> dict:
     """
     D4: Bootstrap confidence intervals on Sharpe ratio, win rate, and avg return.
+
+    Resamples trades independently. Signals that share a disclosure date move
+    together, so real uncertainty is wider than these intervals.
 
     Args:
         returns: List of realized returns (decimal fractions).
         n_bootstrap: Number of bootstrap samples.
         ci: Confidence interval width (0.95 = 95%).
+        hold_days: Holding period of each return, in trading days.
 
     Returns:
         Dict with point estimates and CI lower/upper for each metric.
@@ -351,8 +386,7 @@ def bootstrap_metrics(
         n = len(sample)
         wr = float(np.mean(sample > 0))
         avg_r = float(np.mean(sample))
-        std = float(np.std(sample, ddof=1))
-        sharpe = (avg_r / std * math.sqrt(252)) if std > 0 else 0.0
+        sharpe = annualized_sharpe(sample, hold_days)
 
         sharpes.append(sharpe)
         win_rates.append(wr)
@@ -370,6 +404,7 @@ def bootstrap_metrics(
         "n": len(returns),
         "n_bootstrap": n_bootstrap,
         "confidence_level": ci,
+        "hold_days": hold_days,
         "sharpe_ratio": _ci(sharpes),
         "win_rate": _ci(win_rates),
         "avg_return": _ci(avg_rets),
@@ -451,6 +486,11 @@ class ScoreCalibrator:
         except ImportError:
             return {"status": "error", "message": "scikit-learn not installed"}
 
+        # The holdout below is the LAST eval_pct of records, so they must be
+        # in time order for it to be out-of-sample.
+        if all(r.get("date") is not None for r in records):
+            records = sorted(records, key=lambda r: str(r["date"]))
+
         scores = []
         outcomes = []
         for r in records:
@@ -491,6 +531,12 @@ class ScoreCalibrator:
         # Out-of-sample MAE (on held-out evaluation data)
         eval_probs = self.isotonic.predict(X_eval)
         oos_mae = float(np.mean(np.abs(eval_probs - y_eval)))
+        # Brier score is the proper measure of calibration for a 0/1 outcome
+        # (MAE is minimized by predicting 0 or 1, not the true probability).
+        # Reference: always predicting the fit-set base rate.
+        oos_brier = float(np.mean((eval_probs - y_eval) ** 2))
+        base_rate = float(np.mean(y_fit))
+        oos_brier_base = float(np.mean((base_rate - y_eval) ** 2))
 
         self.fit_stats = {
             "status": "fitted",
@@ -500,6 +546,9 @@ class ScoreCalibrator:
             "calibration_map": score_map,
             "train_mae": round(train_mae, 4),
             "oos_mae": round(oos_mae, 4),
+            "oos_brier": round(oos_brier, 4),
+            "oos_brier_base_rate": round(oos_brier_base, 4),
+            "beats_base_rate": oos_brier < oos_brier_base,
         }
 
         logger.info(
@@ -563,66 +612,86 @@ def deflated_sharpe_ratio(
     n_strategies_tried: int,
     skewness: float = 0.0,
     kurtosis: float = 3.0,
+    periods_per_year: float | None = None,
+    sharpe_variance: float | None = None,
 ) -> dict:
     """
     D6: Bailey & Lopez de Prado (2014) Deflated Sharpe Ratio.
 
-    Adjusts the observed Sharpe ratio for:
-    - Number of strategies tried (multiple testing)
-    - Non-normality of returns (skewness, kurtosis)
-    - Sample size
+        DSR = Phi( (SR - SR0) * sqrt(T - 1)
+                   / sqrt(1 - skew*SR + (kurt - 1)/4 * SR^2) )
 
-    A DSR p-value > 0.05 means the Sharpe is not significantly better
-    than what you'd get by luck given the number of strategies tested.
+        SR0 = sqrt(V) * ( (1 - g) * Phi^-1(1 - 1/N) + g * Phi^-1(1 - 1/(N*e)) )
+
+    Every Sharpe ratio in these formulas is PER PERIOD (not annualized): SR is
+    the observed ratio, T the number of return observations, N the number of
+    strategies tried, V the variance of the Sharpe ratios across those trials
+    and g the Euler-Mascheroni constant. SR0 is the best Sharpe one would
+    expect from N skill-less trials.
 
     Args:
-        observed_sharpe: Annualized Sharpe ratio of the chosen strategy.
-        n_observations: Number of return observations.
-        n_strategies_tried: Total strategies/parameter combos tested.
-        skewness: Return distribution skewness (0 = normal).
-        kurtosis: Return distribution kurtosis (3 = normal).
+        observed_sharpe: Sharpe ratio of the chosen strategy — annualized if
+            `periods_per_year` is given, per-period otherwise.
+        n_observations: Number of return observations (T). Pass the number of
+            independent periods; trades sharing a date are not independent.
+        n_strategies_tried: Total strategies / parameter combinations tested.
+        skewness: Return skewness (0 = normal).
+        kurtosis: Return kurtosis, non-excess (3 = normal).
+        periods_per_year: Return periods per year (252 / hold_days). Used to
+            convert an annualized `observed_sharpe` to per-period units.
+        sharpe_variance: Per-period variance of Sharpe ratios across trials.
+            Defaults to 1/(T-1), the sampling variance of a Sharpe estimate
+            when the true ratio is zero (trials differ only by noise).
 
     Returns:
-        Dict with DSR statistic, p-value, and verdict.
+        Dict with the DSR probability, p-value (1 - DSR) and verdict.
     """
     from scipy.stats import norm
 
     if n_observations < 10 or n_strategies_tried < 1:
         return {"status": "insufficient_data"}
 
-    # Expected maximum Sharpe under null (Euler-Mascheroni approximation)
+    sr = float(observed_sharpe)
+    if periods_per_year:
+        sr = sr / math.sqrt(periods_per_year)
+
+    if sharpe_variance is None:
+        sharpe_variance = 1.0 / (n_observations - 1)
+
+    # Expected maximum Sharpe under the null across N trials
     euler_mascheroni = 0.5772156649
     if n_strategies_tried > 1:
-        expected_max_sharpe = (
-            norm.ppf(1 - 1 / n_strategies_tried)
-            * (1 - euler_mascheroni)
+        expected_max_z = (
+            (1 - euler_mascheroni) * norm.ppf(1 - 1 / n_strategies_tried)
             + euler_mascheroni * norm.ppf(1 - 1 / (n_strategies_tried * math.e))
         )
     else:
-        expected_max_sharpe = 0.0
+        expected_max_z = 0.0
+    sr0 = math.sqrt(max(sharpe_variance, 0.0)) * expected_max_z
 
-    # Standard error of Sharpe ratio (Lo, 2002) with non-normality correction
-    se_sharpe = math.sqrt(
-        (1 + 0.5 * observed_sharpe**2 - skewness * observed_sharpe
-         + ((kurtosis - 3) / 4) * observed_sharpe**2)
-        / (n_observations - 1)
-    )
-
-    if se_sharpe == 0:
+    # Standard error of a per-period Sharpe estimate with non-normal returns
+    # (Mertens 2002): Var(SR) = (1 - skew*SR + (kurt - 1)/4 * SR^2) / (T - 1)
+    variance_term = 1 - skewness * sr + ((kurtosis - 1) / 4) * sr**2
+    if variance_term <= 0:
         return {"status": "zero_variance"}
+    se_sharpe = math.sqrt(variance_term / (n_observations - 1))
 
-    # DSR test statistic
-    dsr_stat = (observed_sharpe - expected_max_sharpe) / se_sharpe
-    p_value = 1 - norm.cdf(dsr_stat)
+    dsr_stat = (sr - sr0) / se_sharpe
+    dsr = float(norm.cdf(dsr_stat))
+    p_value = 1 - dsr
 
     is_significant = p_value < 0.05
+    annualize = math.sqrt(periods_per_year) if periods_per_year else 1.0
 
     return {
         "status": "complete",
-        "observed_sharpe": round(observed_sharpe, 4),
-        "expected_max_sharpe": round(expected_max_sharpe, 4),
+        "observed_sharpe": round(float(observed_sharpe), 4),
+        "observed_sharpe_per_period": round(sr, 4),
+        "expected_max_sharpe": round(sr0 * annualize, 4),
+        "expected_max_sharpe_per_period": round(sr0, 4),
         "se_sharpe": round(se_sharpe, 4),
         "dsr_statistic": round(dsr_stat, 4),
+        "deflated_sharpe_ratio": round(dsr, 4),
         "p_value": round(p_value, 4),
         "n_observations": n_observations,
         "n_strategies_tried": n_strategies_tried,
@@ -637,14 +706,13 @@ def deflated_sharpe_ratio(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _returns_to_metrics(returns: list[float]) -> dict:
+def _returns_to_metrics(returns: list[float], hold_days: int = DEFAULT_HOLD_DAYS) -> dict:
     if not returns:
         return {"n": 0, "sharpe_ratio": 0.0, "win_rate": 0.0, "avg_return": 0.0}
     n = len(returns)
     avg_ret = sum(returns) / n
     wins = sum(1 for r in returns if r > 0)
-    std = float(np.std(returns, ddof=1)) if n > 1 else 0.0
-    sharpe = (avg_ret / std * math.sqrt(252)) if std > 0 else 0.0
+    sharpe = annualized_sharpe(returns, hold_days)
     return {
         "n": n,
         "win_rate": round(wins / n, 4),

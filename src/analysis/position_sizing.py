@@ -69,14 +69,9 @@ def compute_position_sizes(
     total_inv_vol = sum(inv_vols.values())
     raw_weights = {t: iv / total_inv_vol for t, iv in inv_vols.items()}
 
-    # Apply max-weight cap and renormalise
-    capped: dict[str, float] = {}
-    for t, w in raw_weights.items():
-        capped[t] = min(w, MAX_SINGLE_WEIGHT)
-
-    # Renormalise after capping
-    cap_total = sum(capped.values())
-    normalised = {t: w / cap_total for t, w in capped.items()}
+    # Apply the max-weight cap. Whatever cannot be placed without breaking the
+    # cap stays in cash (with fewer than four positions, most of it does).
+    normalised = _cap_weights(raw_weights, MAX_SINGLE_WEIGHT)
 
     # Build output
     positions = []
@@ -109,9 +104,34 @@ def compute_position_sizes(
         "position_sizing.complete",
         n_positions=len(positions),
         portfolio_value=portfolio_value,
+        cash_pct=round(100.0 - sum(p["weight_pct"] for p in positions), 2),
         top=positions[0]["ticker"] if positions else None,
     )
     return positions
+
+
+def _cap_weights(raw: dict[str, float], cap: float) -> dict[str, float]:
+    """Cap every weight at `cap`, handing the excess to the uncapped names
+    pro rata. Repeats until nothing exceeds the cap. If every name is capped
+    the weights sum to less than 1 and the remainder is cash — renormalising
+    at that point would simply undo the cap."""
+    weights = dict(raw)
+    capped: set[str] = set()
+    for _ in range(len(weights)):
+        over = [t for t, w in weights.items() if t not in capped and w > cap + 1e-12]
+        if not over:
+            break
+        capped.update(over)
+        for t in over:
+            weights[t] = cap
+        free = [t for t in weights if t not in capped]
+        free_total = sum(raw[t] for t in free)
+        if not free or free_total <= 0:
+            break
+        remaining = 1.0 - cap * len(capped)
+        for t in free:
+            weights[t] = raw[t] / free_total * remaining
+    return weights
 
 
 def format_sizing_report(positions: list[dict], portfolio_value: float = 100_000) -> str:
@@ -134,4 +154,6 @@ def format_sizing_report(positions: list[dict], portfolio_value: float = 100_000
     lines.append("-" * 75)
     total_w = sum(p["weight_pct"] for p in positions)
     lines.append(f"{'TOTAL':<8} {'':<6} {total_w:>7.1f}%")
+    if total_w < 99.95:
+        lines.append(f"{'CASH':<8} {'':<6} {100 - total_w:>7.1f}%  (single-position cap {MAX_SINGLE_WEIGHT:.0%})")
     return "\n".join(lines)

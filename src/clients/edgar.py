@@ -18,6 +18,7 @@ import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from src.clients.symbols import normalize_symbol
 from src.models.schemas import Direction, SmartMoneyEventSchema, SourceType
 
 logger = structlog.get_logger()
@@ -132,7 +133,12 @@ class EdgarClient:
                 ticker_elem = issuer.find("issuerTradingSymbol")
                 if ticker_elem is not None and ticker_elem.text:
                     ticker = ticker_elem.text.strip().upper()
-            if not ticker or len(ticker) > 10 or ticker in PLACEHOLDER_TICKERS:
+            if not ticker or ticker in PLACEHOLDER_TICKERS:
+                return []
+            # "NYSE: VTEX" / "BRK/B" -> one canonical spelling, so the same
+            # security always lands under the same ticker.
+            ticker = normalize_symbol(ticker)
+            if not ticker:
                 return []
 
             # Reporting owner

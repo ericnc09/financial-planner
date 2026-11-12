@@ -12,9 +12,10 @@ disclosure_date would leak backfilled pre-launch signals into the record). Two p
 Benchmarks (^GSPC, ^IXIC) are rebased to 100 at the same start date.
 Before a pick's entry date its capital sits in cash (ratio 1.0), so the
 curve is money-weighted the same way a real account funding each pick
-equally would be. Tickers with no price data at all are carried at 0
-(delisted = total loss, no survivorship bias); tickers whose history ends
-early are carried flat at their last price.
+equally would be. Tickers whose history ends early are carried flat at their
+last price. Tickers with no price data at all are left out and listed under
+"unpriced_tickers": in practice they are symbols the price source spells
+differently, not bankruptcies, and carrying them at zero invented losses.
 
 Outputs: reports/performance_vs_benchmarks.json and .png
 """
@@ -30,6 +31,10 @@ import pandas as pd
 import yfinance as yf
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.clients.symbols import yahoo_candidates  # noqa: E402
 DB = ROOT / "smart_money.db"
 OUT_DIR = ROOT / "reports"
 OUT_DIR.mkdir(exist_ok=True)
@@ -59,14 +64,19 @@ def load_picks() -> tuple[dict[str, str], dict[str, str]]:
 
 def fetch_prices(tickers: list[str], start: str) -> pd.DataFrame:
     """Daily closes, one column per ticker. Missing tickers come back all-NaN."""
+    # Ask the price source for its own spelling of each symbol (BRK.B -> BRK-B)
+    lookup = {t: (yahoo_candidates(t) or [t])[0] for t in tickers}
     data = yf.download(
-        tickers, start=start, auto_adjust=True, progress=False, group_by="column"
+        sorted(set(lookup.values())), start=start, auto_adjust=True,
+        progress=False, group_by="column",
     )
     closes = data["Close"]
     if isinstance(closes, pd.Series):  # single ticker edge case
-        closes = closes.to_frame(tickers[0])
+        closes = closes.to_frame(next(iter(lookup.values())))
     closes.index = pd.to_datetime(closes.index).tz_localize(None)
-    return closes
+    return pd.DataFrame({
+        t: closes[y] for t, y in lookup.items() if y in closes.columns
+    }, index=closes.index)
 
 
 def equity_curve(closes: pd.DataFrame, picks: dict[str, str], calendar: pd.DatetimeIndex):
@@ -77,13 +87,8 @@ def equity_curve(closes: pd.DataFrame, picks: dict[str, str], calendar: pd.Datet
         col = closes[ticker].dropna() if ticker in closes else pd.Series(dtype=float)
         col = col[col.index >= pd.Timestamp(signal_date)]
         if col.empty:
-            # never traded after signal -> assume delisted, total loss from signal date
-            r = pd.Series(1.0, index=calendar)
-            r[calendar >= pd.Timestamp(signal_date)] = 0.0
-            ratios[ticker] = r
+            # No prices after the signal: unpriced, excluded from the curve
             dead.append(ticker)
-            stats.append({"ticker": ticker, "entry_date": signal_date,
-                          "entry": None, "last": None, "return_pct": -100.0})
             continue
         entry_date, entry_px = col.index[0], float(col.iloc[0])
         r = (col / entry_px).reindex(calendar)
@@ -124,7 +129,7 @@ def main():
         "start": start,
         "n_all": len(all_buys),
         "n_high_conviction": len(high_conv),
-        "dead_tickers": dead,
+        "unpriced_tickers": dead,
         "dates": [d.strftime("%Y-%m-%d") for d in calendar],
         "series": {
             "all_buys": [round(v, 3) for v in curve_all],
@@ -143,7 +148,7 @@ def main():
     }
     (OUT_DIR / "performance_vs_benchmarks.json").write_text(json.dumps(payload, indent=2))
     print(json.dumps(payload["totals_pct"], indent=2))
-    print("dead:", dead)
+    print("unpriced (excluded):", dead)
 
     import matplotlib
     matplotlib.use("Agg")
@@ -156,7 +161,7 @@ def main():
     ax.plot(calendar, nq, label="Nasdaq Composite", lw=1.6, color="#f59e0b", ls="--")
     ax.axhline(100, color="#cbd5e1", lw=0.8)
     ax.set_title(f"Smart Money Follows — live signals vs benchmarks ({start} → {date.today()})")
-    ax.set_ylabel("Growth of 100 (equal-weight, 30bps cost, incl. delistings)")
+    ax.set_ylabel("Growth of 100 (equal-weight, 30bps cost)")
     ax.legend(loc="upper left")
     ax.grid(alpha=0.25)
     fig.tight_layout()

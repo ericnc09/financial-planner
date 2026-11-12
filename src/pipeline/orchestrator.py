@@ -1,12 +1,17 @@
 import argparse
 import asyncio
-from datetime import datetime
+import json
+from collections import defaultdict
+from datetime import datetime, timedelta
 
+import numpy as np
+import pandas as pd
 import structlog
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import Settings
-from src.analysis.bayesian_decay import BayesianDecayAnalyzer
+from src.analysis.bayesian_decay import BayesianDecayAnalyzer, decay_component
 from src.analysis.copula_tail_risk import CopulaTailRisk
 from src.analysis.earnings_overlay import EarningsOverlay
 from src.analysis.ensemble_scoring import EnsembleScorer
@@ -16,9 +21,15 @@ from src.analysis.hmm_regime import HMMRegimeDetector
 from src.analysis.mean_variance import MeanVarianceOptimizer
 from src.analysis.monte_carlo import MonteCarloSimulator
 from src.analysis.news_sentiment import NewsSentimentAnalyzer
-from src.analysis.weather_overlay import WeatherOverlay
+from src.analysis.pooled_alpha import (
+    pooled_event_stats,
+    post_event_abnormal_returns,
+    trading_days_since,
+)
+from src.analysis.weather_overlay import BASELINE_WINDOW_DAYS, WeatherOverlay
 from src.clients.congress import CongressClient
-from src.clients.options import OptionsClient
+from src.clients.options import METHOD_VERSION as OPTIONS_METHOD_VERSION
+from src.clients.options import OptionsClient, percentile_rank
 from src.clients.edgar import EdgarClient
 from src.clients.edgar_13f import Edgar13FClient
 from src.clients.edgar_xbrl import EdgarXbrlClient
@@ -48,10 +59,12 @@ from src.models.database import (
     MonteCarloResult,
     SmartMoneyEvent,
     SourceType,
+    WeatherSnapshot,
     get_session_factory,
     init_db,
 )
 from src.models.schemas import MacroRegime
+from src.alerts.digest import publish_digest
 from src.alerts.notifier import SlackNotifier, WhatsAppNotifier, create_notifier
 from src.scoring.conviction_engine import ConvictionEngine
 from src.scoring.fundamental_scorer import FundamentalScorer
@@ -92,6 +105,9 @@ class Orchestrator:
         self.engine = None
         self.session_factory = None
         self.conviction_engine: ConvictionEngine | None = None
+        # ticker -> "common" | "preferred_or_debt" | "fund_or_other", filled
+        # during enrichment. Equity factor models are skipped for non-common.
+        self._security_types: dict[str, str | None] = {}
 
     async def initialize(self):
         logger.info("orchestrator.initializing")
@@ -165,13 +181,20 @@ class Orchestrator:
             logger.info("orchestrator.no_new_events")
             # Returns keep accruing even when no new signals arrive
             await self._update_signal_performance()
+            # ...and so do completed post-disclosure windows
+            await self._run_event_studies()
             # Still produce the morning top pick from recent signals in the DB
-            await self._send_morning_top_pick()
+            await self._log_top_pick()
+            await self._publish_digest()
             return
 
         # --- Step 2: ENRICH ---
         enrichments = await self._enrich_events(new_events)
         logger.info("orchestrator.enriched", count=len(enrichments))
+
+        # Publish now: the digest only needs events and sectors, and the models
+        # below can take over an hour, past the 7:30 AM email.
+        await self._publish_digest()
 
         # --- Step 3: MACRO ---
         macro_snapshot = await asyncio.to_thread(self.fred.get_macro_snapshot)
@@ -199,14 +222,9 @@ class Orchestrator:
         # --- Step 3d: COPULA TAIL RISK ---
         await self._run_copula_analysis(unique_tickers)
 
-        # --- Step 3e: MEAN-VARIANCE OPTIMIZATION ---
-        try:
-            await self._run_mean_variance(unique_tickers)
-        except Exception as e:
-            logger.warning("orchestrator.meanvar_failed", error=str(e))
-
-        # --- Step 3f: EVENT STUDY + BAYESIAN DECAY ---
-        await self._run_event_studies(new_events)
+        # --- Step 3f: EVENT STUDIES for signals whose window has completed ---
+        # (feeds the pooled event-study and decay components scored in 3g)
+        await self._run_event_studies()
 
         # --- Step 3h: OPTIONS FLOW ---
         await self._run_options_analysis(unique_tickers)
@@ -231,7 +249,7 @@ class Orchestrator:
             threshold=self.settings.conviction_threshold,
         )
 
-        # Log actionable signals + send alerts
+        # Log actionable signals
         for event, enrichment, result in passing:
             logger.info(
                 "orchestrator.actionable_signal",
@@ -242,23 +260,22 @@ class Orchestrator:
                 price=enrichment.price_at_signal,
                 sector=enrichment.sector,
             )
-            if self.notifier:
-                await self.notifier.send_conviction_alert(
-                    ticker=event.ticker,
-                    direction=event.direction.value,
-                    actor=event.actor,
-                    conviction=result.conviction,
-                    signal_score=result.signal_score,
-                    fundamental_score=result.fundamental_score,
-                    sector=enrichment.sector,
-                    price=enrichment.price_at_signal,
-                )
+
+        # --- Step 4b: MEAN-VARIANCE OPTIMIZATION ---
+        # Runs after scoring so the long-only portfolio is built from the
+        # highest-conviction BUY signals, not from every ticker in the cycle
+        # (sells and hundreds of names made the problem meaningless and
+        # numerically unstable).
+        try:
+            await self._run_mean_variance(self._portfolio_candidates(scored))
+        except Exception as e:
+            logger.warning("orchestrator.meanvar_failed", error=str(e))
 
         # --- Step 5: PERFORMANCE TRACKING ---
         await self._update_signal_performance()
 
-        # --- Step 6: MORNING TOP PICK ---
-        await self._send_morning_top_pick()
+        # --- Step 6: TOP PICK ---
+        await self._log_top_pick()
 
         logger.info("orchestrator.cycle_complete")
 
@@ -274,9 +291,16 @@ class Orchestrator:
         except Exception as e:
             logger.warning("orchestrator.performance_update_failed", error=str(e))
 
-    async def _send_morning_top_pick(self):
-        """Select and announce the single most promising stock for the
-        following days, blending conviction, ensemble, and Monte Carlo."""
+    async def _publish_digest(self):
+        """Publish today's trades, and send the one compiled daily message."""
+        try:
+            await publish_digest(self.session_factory, self.notifier, self.settings)
+        except Exception as e:
+            logger.warning("orchestrator.digest_failed", error=str(e))
+
+    async def _log_top_pick(self):
+        """Select and log the single most promising stock for the following
+        days, blending conviction, ensemble, and Monte Carlo."""
         try:
             from src.analysis.top_pick import select_top_pick
 
@@ -289,8 +313,6 @@ class Orchestrator:
                 ticker=pick["ticker"], score=pick["score"],
                 sector=pick.get("sector"),
             )
-            if self.notifier:
-                await self.notifier.send_top_pick(pick)
         except Exception as e:
             logger.warning("orchestrator.top_pick_failed", error=str(e))
 
@@ -348,6 +370,8 @@ class Orchestrator:
                 if enrichment is not None:
                     enrichment = await self._overlay_xbrl_fundamentals(ticker, enrichment)
                 ticker_cache[ticker] = enrichment
+                if enrichment is not None:
+                    self._security_types[ticker] = getattr(enrichment, "security_type", None)
                 logger.info("orchestrator.enriched_ticker", ticker=ticker)
             except Exception as e:
                 logger.warning(
@@ -547,9 +571,10 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning("orchestrator.garch_failed", ticker=ticker, error=str(e))
 
-                # Fama-French Factor Exposure (date-joined to FF factor rows)
+                # Fama-French Factor Exposure (date-joined to FF factor rows).
+                # Equity factors say nothing about a preferred share or a note.
                 try:
-                    if ff_factors is not None:
+                    if ff_factors is not None and self._is_common_stock(ticker):
                         return_dates = price_data["dates"][1:] if price_data.get("dates") else None
                         ff_result = self.fama_french.compute_factor_exposure(
                             returns, ff_factors, stock_dates=return_dates
@@ -604,16 +629,17 @@ class Orchestrator:
     def _persist_hmm(self, ticker: str, run_date: datetime, result: dict):
         session = self.session_factory()
         try:
+            # Folded bull/bear/sideways figures: the raw per-state dict has
+            # extra keys (mild_bull, mild_bear) when BIC picks 4-5 states.
             current = result["current_state"]
-            probs = result["current_probabilities"]
-            trans = result["transition_matrix"].get(current, {})
+            trans = result.get("transition_from_current") or {}
             hmm = HMMRegimeState(
                 ticker=ticker,
                 run_date=run_date,
                 current_state=current,
-                prob_bull=probs.get("bull"),
-                prob_bear=probs.get("bear"),
-                prob_sideways=probs.get("sideways"),
+                prob_bull=result.get("prob_bull"),
+                prob_bear=result.get("prob_bear"),
+                prob_sideways=result.get("prob_sideways"),
                 trans_to_bull=trans.get("bull"),
                 trans_to_bear=trans.get("bear"),
                 trans_to_sideways=trans.get("sideways"),
@@ -671,6 +697,7 @@ class Orchestrator:
                 beta_rmw=result["beta_rmw"],
                 beta_cma=result["beta_cma"],
                 r_squared=result["r_squared"],
+                alpha_tstat=result.get("alpha_tstat"),
             )
             session.add(ff)
             session.commit()
@@ -679,97 +706,134 @@ class Orchestrator:
         finally:
             session.close()
 
-    async def _run_event_studies(self, new_events: list):
-        """Run event study analysis on each new event."""
-        import json
-        import numpy as np
+    # --- Event studies: measured from disclosure, on completed windows ---
+    EVENT_STUDY_MIN_AGE_DAYS = 32     # ~21 trading days must have passed
+    EVENT_STUDY_MAX_AGE_DAYS = 300    # older events fall outside the price window
+    EVENT_STUDY_GIVE_UP_DAYS = 60     # still unmeasurable by then: mark, stop retrying
+    EVENT_STUDY_MAX_TICKERS = 500     # per cycle (~1 min); the backlog drains in a few runs
+    EVENT_STUDY_HISTORY_DAYS = 730
+    MARKET_PROXY = "SPY"
 
-        logger.info("orchestrator.event_study_start", events=len(new_events))
-        run_date = datetime.utcnow()
+    async def _run_event_studies(self):
+        """Maturation job: event studies for past signals whose 20-day
+        post-disclosure window has completed.
 
-        # Pre-load Fama-French factors for market returns
-        ff_factors = await self.fama_french.get_factors(days=504)
-        if ff_factors is None:
-            logger.warning("orchestrator.event_study_no_factors")
-            return
-
-        market_returns = ff_factors["Mkt-RF"].values
-
-        # Cache price data per ticker
-        ticker_price_cache: dict[str, dict] = {}
-        results = []
-
-        for event_id, event_schema in new_events:
+        Day 0 is the first trading day AFTER the signal became public — the
+        first day a follower could trade — and the market model uses SPY, so
+        nothing waits on the weeks-late Fama-French file. A signal's own event
+        study can therefore never exist while the signal is fresh; fresh
+        signals are scored from the pooled history instead (see
+        _pooled_signal_alpha).
+        """
+        try:
+            now = datetime.utcnow()
+            session = self.session_factory()
             try:
-                ticker = event_schema.ticker
-
-                # Fetch price data (cached per ticker)
-                if ticker not in ticker_price_cache:
-                    price_data = await self.yahoo.get_price_history(ticker, days=504)
-                    ticker_price_cache[ticker] = price_data
-
-                price_data = ticker_price_cache[ticker]
-                if price_data is None:
-                    continue
-
-                price_dates = price_data["dates"]
-                price_returns = price_data["returns"]
-                return_dates = price_dates[1:] if price_dates else None
-
-                # Date-join stock returns to market (Mkt-RF) returns. FF data
-                # lags by weeks, so tail-aligning the arrays would shift every
-                # observation in the market-model regression by that lag.
-                aligned = self.fama_french.align_stock_to_factors(
-                    price_returns, return_dates, ff_factors
+                signal_date = func.coalesce(
+                    SmartMoneyEvent.disclosure_date, SmartMoneyEvent.trade_date
                 )
-                if aligned is not None:
-                    aligned_stock, factor_rows, common_dates = aligned
-                    aligned_market = factor_rows["Mkt-RF"].values
-                    # analyze_event maps return index i to price_dates[i+1],
-                    # so prepend one placeholder date to keep that mapping.
-                    aligned_dates = [common_dates[0]] + list(common_dates)
-                else:
-                    n = min(len(price_returns), len(market_returns))
-                    aligned_market = market_returns[-n:]
-                    aligned_stock = price_returns[-n:]
-                    aligned_dates = price_dates[-(n + 1):]  # dates are 1 longer than returns
-
-                result = self.event_study.analyze_event(
-                    ticker=ticker,
-                    event_date=event_schema.trade_date,
-                    direction=event_schema.direction.value,
-                    price_dates=aligned_dates,
-                    price_returns=aligned_stock,
-                    market_returns=aligned_market,
+                done = session.query(EventStudyResult.event_id).filter(
+                    EventStudyResult.anchor == "disclosure"
                 )
-
-                if result:
-                    result["event_id"] = event_id
-                    result["source_type"] = event_schema.source_type.value
-                    self._persist_event_study(result, run_date)
-                    results.append(result)
-
-            except Exception as e:
-                logger.warning(
-                    "orchestrator.event_study_failed",
-                    ticker=event_schema.ticker,
-                    error=str(e),
+                events = (
+                    session.query(SmartMoneyEvent)
+                    .filter(signal_date <= now - timedelta(days=self.EVENT_STUDY_MIN_AGE_DAYS))
+                    .filter(signal_date >= now - timedelta(days=self.EVENT_STUDY_MAX_AGE_DAYS))
+                    .filter(~SmartMoneyEvent.id.in_(done))
+                    .order_by(signal_date.desc())
+                    .all()
                 )
+                by_ticker: dict[str, list[tuple]] = {}
+                for e in events:
+                    by_ticker.setdefault(e.ticker, []).append((
+                        e.id, e.direction.value, e.source_type.value,
+                        e.disclosure_date or e.trade_date,
+                    ))
+            finally:
+                session.close()
 
-        if results:
-            aggregate = self.event_study.aggregate_results(results)
+            if not by_ticker:
+                logger.info("orchestrator.event_study_nothing_pending")
+                return
+
+            tickers = list(by_ticker)[: self.EVENT_STUDY_MAX_TICKERS]
             logger.info(
-                "orchestrator.event_study_done",
-                n_analyzed=len(results),
-                mean_car_5d=aggregate.get("overall", {}).get("car_5d", {}).get("mean"),
-                mean_car_20d=aggregate.get("overall", {}).get("car_20d", {}).get("mean"),
+                "orchestrator.event_study_start",
+                tickers=len(tickers), backlog_tickers=len(by_ticker),
             )
-        else:
-            logger.info("orchestrator.event_study_no_results")
+
+            market = await self.yahoo.get_price_history(
+                self.MARKET_PROXY, days=self.EVENT_STUDY_HISTORY_DAYS
+            )
+            if market is None or not market.get("dates"):
+                logger.warning("orchestrator.event_study_no_market_data")
+                return
+            market_series = self._return_series(market).rename("market")
+
+            measured = 0
+            for ticker in tickers:
+                try:
+                    price_data = await self.yahoo.get_price_history(
+                        ticker, days=self.EVENT_STUDY_HISTORY_DAYS
+                    )
+                    aligned = None
+                    if price_data is not None and price_data.get("dates"):
+                        # Date-join stock and market returns
+                        frame = pd.concat(
+                            [self._return_series(price_data).rename("stock"), market_series],
+                            axis=1, join="inner",
+                        ).dropna()
+                        if len(frame) > 0:
+                            aligned = frame
+
+                    for event_id, direction, source_type, disclosed in by_ticker[ticker]:
+                        result = None
+                        if aligned is not None:
+                            common = list(aligned.index)
+                            result = self.event_study.analyze_event(
+                                ticker=ticker,
+                                # first trading day strictly after disclosure
+                                event_date=disclosed + timedelta(days=1),
+                                direction=direction,
+                                # analyze_event maps return i to price_dates[i+1]
+                                price_dates=[common[0]] + common,
+                                price_returns=aligned["stock"].values,
+                                market_returns=aligned["market"].values,
+                            )
+                        if result:
+                            result.update(
+                                event_id=event_id, source_type=source_type,
+                                anchor="disclosure", anchor_date=disclosed,
+                            )
+                            self._persist_event_study(result, now)
+                            measured += 1
+                        elif (now - disclosed).days > self.EVENT_STUDY_GIVE_UP_DAYS:
+                            # No price history / too little pre-event data.
+                            # Record that it was tried so it is not retried.
+                            self._persist_event_study({
+                                "ticker": ticker, "event_id": event_id,
+                                "direction": direction, "source_type": source_type,
+                                "anchor": "disclosure", "anchor_date": disclosed,
+                            }, now)
+                except Exception as e:
+                    logger.warning(
+                        "orchestrator.event_study_failed", ticker=ticker, error=str(e)
+                    )
+
+            logger.info("orchestrator.event_study_done", measured=measured)
+        except Exception as e:
+            logger.warning("orchestrator.event_study_job_failed", error=str(e))
+
+    @staticmethod
+    def _return_series(price_data: dict) -> "pd.Series":
+        """Daily log returns indexed by (naive, normalized) date."""
+        series = pd.Series(
+            np.asarray(price_data["returns"], dtype=float),
+            index=FamaFrenchClient._to_naive_index(price_data["dates"][1:]),
+        )
+        return series[~series.index.duplicated(keep="last")]
 
     def _persist_event_study(self, result: dict, run_date: datetime):
-        import json
-
         session = self.session_factory()
         try:
             es = EventStudyResult(
@@ -778,18 +842,20 @@ class Orchestrator:
                 run_date=run_date,
                 direction=result["direction"],
                 source_type=result.get("source_type"),
-                car_1d=result["car_1d"],
-                car_5d=result["car_5d"],
-                car_10d=result["car_10d"],
-                car_20d=result["car_20d"],
-                t_statistic=result["t_statistic"],
-                p_value=result["p_value"],
-                is_significant=result["is_significant"],
-                alpha=result["alpha"],
-                beta=result["beta"],
-                sigma_est=result["sigma_est"],
-                n_estimation=result["n_estimation"],
-                daily_cars=json.dumps(result["daily_cars"]),
+                car_1d=result.get("car_1d"),
+                car_5d=result.get("car_5d"),
+                car_10d=result.get("car_10d"),
+                car_20d=result.get("car_20d"),
+                t_statistic=result.get("t_statistic"),
+                p_value=result.get("p_value"),
+                is_significant=result.get("is_significant"),
+                alpha=result.get("alpha"),
+                beta=result.get("beta"),
+                sigma_est=result.get("sigma_est"),
+                n_estimation=result.get("n_estimation"),
+                daily_cars=json.dumps(result["daily_cars"]) if result.get("daily_cars") else None,
+                anchor=result.get("anchor"),
+                anchor_date=result.get("anchor_date"),
             )
             session.add(es)
             session.commit()
@@ -797,6 +863,185 @@ class Orchestrator:
             session.rollback()
         finally:
             session.close()
+
+    def _pooled_signal_alpha(self) -> dict[tuple[str, str], dict]:
+        """(source_type, direction) -> pooled post-disclosure history.
+
+        Each value holds "event_study" (cluster-level CAR statistics) and
+        "decay" (Bayesian decay fit of the mean abnormal-return curve). A
+        group is absent until it has enough distinct disclosure dates.
+        """
+        session = self.session_factory()
+        groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        try:
+            rows = (
+                session.query(EventStudyResult)
+                .filter(EventStudyResult.anchor == "disclosure")
+                .filter(EventStudyResult.car_20d.isnot(None))
+                .all()
+            )
+            for r in rows:
+                daily_ars = None
+                if r.daily_cars:
+                    try:
+                        daily_ars = post_event_abnormal_returns(
+                            json.loads(r.daily_cars), self.event_study.evt_start
+                        )
+                    except (ValueError, TypeError):
+                        daily_ars = None
+                groups[(r.source_type, r.direction)].append({
+                    "anchor_date": r.anchor_date.date() if r.anchor_date else None,
+                    "car_5d": r.car_5d,
+                    "car_20d": r.car_20d,
+                    "daily_ars": daily_ars,
+                })
+        finally:
+            session.close()
+
+        pooled = {}
+        for key, items in groups.items():
+            stats = pooled_event_stats(items)
+            if stats is None:
+                continue
+            curve = stats.pop("mean_ar_by_day")
+            fit = None
+            if curve is not None:
+                try:
+                    fit = BayesianDecayAnalyzer().analyze(curve, direction=key[1])
+                except Exception as e:
+                    logger.warning("orchestrator.decay_fit_failed", group=key, error=str(e))
+            pooled[key] = {"event_study": stats, "decay": fit}
+            logger.info(
+                "orchestrator.pooled_alpha",
+                source=key[0], direction=key[1],
+                n_events=stats["n_events"], n_clusters=stats["n_clusters"],
+                mean_car_20d=stats["mean_car_20d"], p_value=stats["p_value"],
+                half_life=fit.get("posterior_half_life") if fit else None,
+            )
+        return pooled
+
+    def _persist_bayesian_decay(
+        self, ticker: str, event_id: int, run_date: datetime, direction: str, fit: dict
+    ):
+        session = self.session_factory()
+        try:
+            strength = fit.get("signal_strength") or {}
+            ci = fit.get("ci_half_life_95") or (None, None)
+            session.add(BayesianDecayResult(
+                ticker=ticker, event_id=event_id, run_date=run_date,
+                direction=direction,
+                n_days=fit.get("n_days"),
+                total_car=fit.get("total_car"),
+                posterior_half_life=fit.get("posterior_half_life"),
+                posterior_lambda=fit.get("posterior_lambda"),
+                ci_half_life_lower=ci[0],
+                ci_half_life_upper=ci[1],
+                entry_window_days=fit.get("entry_window_days"),
+                exit_window_days=fit.get("exit_window_days"),
+                annualized_ir=fit.get("annualized_ir"),
+                decay_quality=fit.get("decay_quality"),
+                signal_strength_5d=(strength.get(5) or {}).get("remaining_pct"),
+                signal_strength_20d=(strength.get(20) or {}).get("remaining_pct"),
+                prob_alpha_positive=fit.get("prob_alpha_positive"),
+            ))
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+
+    async def _weather_context(self) -> dict | None:
+        """National weather context plus how unusual today's alert count is
+        against the counts stored by previous cycles."""
+        ctx = await self.weather.get_context()
+        if not ctx:
+            return ctx
+        now = datetime.utcnow()
+        history: list[float] = []
+        session = self.session_factory()
+        try:
+            rows = (
+                session.query(WeatherSnapshot)
+                .filter(WeatherSnapshot.snapshot_date >= now - timedelta(days=BASELINE_WINDOW_DAYS + 1))
+                .filter(WeatherSnapshot.n_severe_alerts.isnot(None))
+                .all()
+            )
+            by_day: dict = defaultdict(list)
+            for r in rows:
+                if r.snapshot_date.date() < now.date():
+                    by_day[r.snapshot_date.date()].append(r.n_severe_alerts)
+            history = [float(np.mean(v)) for v in by_day.values()]
+            session.add(WeatherSnapshot(
+                snapshot_date=now,
+                n_severe_alerts=ctx.get("n_severe_alerts"),
+                temp_anomaly_c=ctx.get("temp_anomaly_c"),
+                degree_day_delta=ctx.get("degree_day_delta"),
+                n_cities=ctx.get("n_cities"),
+            ))
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        finally:
+            session.close()
+        return WeatherOverlay.with_alert_baseline(ctx, history)
+
+    # Tickers needed before a cross-sectional options percentile means anything
+    OPTIONS_MIN_REFERENCE = 20
+    OPTIONS_MIN_OWN_HISTORY = 10
+
+    def _options_reference(self) -> dict[str, list[float]]:
+        """Latest put/call ratio and skew per ticker over the last 30 days,
+        current method only — the population each ticker is ranked against."""
+        session = self.session_factory()
+        try:
+            rows = (
+                session.query(OptionsFlow)
+                .filter(OptionsFlow.method_version == OPTIONS_METHOD_VERSION)
+                .filter(OptionsFlow.analysis_date >= datetime.utcnow() - timedelta(days=30))
+                .order_by(OptionsFlow.ticker, OptionsFlow.analysis_date.desc())
+                .all()
+            )
+            latest: dict[str, OptionsFlow] = {}
+            for r in rows:
+                latest.setdefault(r.ticker, r)
+            return {
+                "pcr": [r.pcr for r in latest.values() if r.pcr is not None],
+                "iv_skew": [r.iv_skew for r in latest.values() if r.iv_skew is not None],
+            }
+        finally:
+            session.close()
+
+    def _options_dict(self, session, opts_row, reference: dict[str, list[float]]) -> dict | None:
+        """Options row -> ensemble input with percentile ranks attached."""
+        if opts_row is None or opts_row.method_version != OPTIONS_METHOD_VERSION:
+            return None  # legacy rows used a different, biased definition
+
+        def rank(field: str, value):
+            if value is None:
+                return None
+            ref = reference.get(field) or []
+            if len(ref) < self.OPTIONS_MIN_REFERENCE:
+                # Small cycle: fall back to the ticker's own recent history
+                own = [
+                    getattr(r, field) for r in session.query(OptionsFlow)
+                    .filter(OptionsFlow.ticker == opts_row.ticker)
+                    .filter(OptionsFlow.method_version == OPTIONS_METHOD_VERSION)
+                    .filter(OptionsFlow.analysis_date >= datetime.utcnow() - timedelta(days=90))
+                    .all()
+                ]
+                ref = [v for v in own if v is not None]
+                if len(ref) < self.OPTIONS_MIN_OWN_HISTORY:
+                    return None
+            return percentile_rank(value, ref)
+
+        return {
+            "pcr": opts_row.pcr,
+            "iv_skew": opts_row.iv_skew,
+            "pcr_percentile": rank("pcr", opts_row.pcr),
+            "iv_skew_percentile": rank("iv_skew", opts_row.iv_skew),
+            "unusual_volume_score": opts_row.unusual_volume_score,
+            "max_pain": opts_row.max_pain,
+        }
 
     async def _run_copula_analysis(self, tickers: list[str]):
         """Run copula tail risk on each ticker vs market."""
@@ -813,6 +1058,8 @@ class Orchestrator:
 
         for ticker in tickers:
             try:
+                if not self._is_common_stock(ticker):
+                    continue
                 price_data = await self.yahoo.get_price_history(ticker, days=504)
                 if price_data is None:
                     continue
@@ -864,8 +1111,31 @@ class Orchestrator:
         finally:
             session.close()
 
+    # Largest universe handed to the optimizer. Beyond a few dozen names the
+    # sample covariance from one year of data is mostly noise.
+    MEANVAR_MAX_ASSETS = 30
+
+    def _is_common_stock(self, ticker: str) -> bool:
+        """False only when enrichment positively identified a non-common security."""
+        return self._security_types.get(ticker) in (None, "common")
+
+    def _portfolio_candidates(self, scored: list) -> list[str]:
+        """Tickers of the highest-conviction BUY signals, best first."""
+        buys = [
+            (result.conviction, event.ticker)
+            for event, _enrichment, result in scored
+            if event.direction.value == "buy" and self._is_common_stock(event.ticker)
+        ]
+        tickers: list[str] = []
+        for _conviction, ticker in sorted(buys, key=lambda b: -b[0]):
+            if ticker not in tickers:
+                tickers.append(ticker)
+            if len(tickers) >= self.MEANVAR_MAX_ASSETS:
+                break
+        return tickers
+
     async def _run_mean_variance(self, tickers: list[str]):
-        """Run mean-variance optimization across all signal tickers."""
+        """Run mean-variance optimization across the given signal tickers."""
         import json
         import numpy as np
 
@@ -877,8 +1147,11 @@ class Orchestrator:
         run_date = datetime.utcnow()
 
         # Collect returns for all tickers
+        import pandas as pd
+
         valid_tickers = []
         returns_list = []
+        dates_list = []
         for ticker in tickers:
             try:
                 price_data = await self.yahoo.get_price_history(ticker, days=252)
@@ -891,6 +1164,8 @@ class Orchestrator:
                     continue
                 valid_tickers.append(ticker)
                 returns_list.append(price_data["returns"])
+                dates = price_data.get("dates")
+                dates_list.append(dates[1:] if dates else None)
             except Exception as e:
                 logger.warning("orchestrator.meanvar_data_failed", ticker=ticker, error=str(e))
 
@@ -898,9 +1173,24 @@ class Orchestrator:
             logger.info("orchestrator.meanvar_skip", reason="insufficient valid tickers")
             return
 
-        # Align to common length
-        min_len = min(len(r) for r in returns_list)
-        returns_matrix = np.column_stack([r[-min_len:] for r in returns_list])
+        if all(d is not None and len(d) == len(r) for d, r in zip(dates_list, returns_list)):
+            # Join on actual dates: tickers with a halt or a shorter listing
+            # history would otherwise be shifted against the others.
+            frame = pd.concat(
+                [
+                    pd.Series(r, index=FamaFrenchClient._to_naive_index(d), name=t)
+                    for t, r, d in zip(valid_tickers, returns_list, dates_list)
+                ],
+                axis=1, join="inner",
+            ).dropna()
+            if len(frame) < 30:
+                logger.info("orchestrator.meanvar_skip", reason="too few common trading days")
+                return
+            returns_matrix = frame.values
+        else:
+            # No dates available — align to common length
+            min_len = min(len(r) for r in returns_list)
+            returns_matrix = np.column_stack([r[-min_len:] for r in returns_list])
 
         result = self.mean_variance.optimize(valid_tickers, returns_matrix)
         if result:
@@ -963,6 +1253,7 @@ class Orchestrator:
                 total_put_volume=data.get("total_put_volume"),
                 total_call_oi=data.get("total_call_oi"),
                 total_put_oi=data.get("total_put_oi"),
+                method_version=data.get("method_version"),
             )
             session.add(row)
             session.commit()
@@ -979,12 +1270,27 @@ class Orchestrator:
         logger.info("orchestrator.ensemble_start", events=len(new_events))
         run_date = datetime.utcnow()
 
-        # Weather context: one national fetch per cycle
+        # Weather context: one national fetch per cycle, with alert baseline
         weather_ctx = None
         try:
-            weather_ctx = await self.weather.get_context()
+            weather_ctx = await self._weather_context()
         except Exception as e:
             logger.debug("orchestrator.weather_ctx_failed", error=str(e))
+
+        # Pooled post-disclosure history per (source, direction): the event
+        # study and decay components of a fresh signal come from here.
+        pooled_alpha: dict = {}
+        try:
+            pooled_alpha = self._pooled_signal_alpha()
+        except Exception as e:
+            logger.warning("orchestrator.pooled_alpha_failed", error=str(e))
+
+        # Cross-section each ticker's options positioning is ranked against
+        options_reference: dict = {}
+        try:
+            options_reference = self._options_reference()
+        except Exception as e:
+            logger.warning("orchestrator.options_reference_failed", error=str(e))
 
         # News sentiment: fetch once per unique ticker, persist, reuse
         news_cache: dict[str, dict | None] = {}
@@ -992,6 +1298,7 @@ class Orchestrator:
         for event_id, event_schema in new_events:
             try:
                 ticker = event_schema.ticker
+                direction = event_schema.direction.value
 
                 if ticker not in news_cache:
                     news_result = None
@@ -1029,17 +1336,10 @@ class Orchestrator:
                         CopulaTailRiskResult.ticker == ticker
                     ).order_by(desc(CopulaTailRiskResult.run_date)).first()
 
-                    bd_row = session.query(BayesianDecayResult).filter(
-                        BayesianDecayResult.event_id == event_id
-                    ).order_by(desc(BayesianDecayResult.run_date)).first()
-
-                    es_row = session.query(EventStudyResult).filter(
-                        EventStudyResult.event_id == event_id
-                    ).order_by(desc(EventStudyResult.run_date)).first()
-
                     opts_row = session.query(OptionsFlow).filter(
                         OptionsFlow.ticker == ticker
                     ).order_by(OptionsFlow.analysis_date.desc()).first()
+                    opts_dict = self._options_dict(session, opts_row, options_reference)
 
                     enr_row = session.query(Enrichment).filter(
                         Enrichment.event_id == event_id
@@ -1051,7 +1351,7 @@ class Orchestrator:
                 weather_dict = None
                 if weather_ctx and enr_row and enr_row.sector:
                     weather_dict = WeatherOverlay.score(
-                        enr_row.sector, event_schema.direction.value, weather_ctx
+                        enr_row.sector, direction, weather_ctx
                     )
 
                 # Convert DB rows to dicts for ensemble scorer
@@ -1068,34 +1368,33 @@ class Orchestrator:
                               "forecast_20d_ratio": garch.forecast_20d_ratio} if garch else None
 
                 ff_dict = {"alpha_annual": ff.alpha_annual,
+                           "alpha_tstat": ff.alpha_tstat,
                            "r_squared": ff.r_squared} if ff else None
 
                 cop_dict = {"tail_risk_score": copula_row.tail_risk_score} if copula_row else None
 
-                bd_dict = {"decay_quality": bd_row.decay_quality,
-                           "signal_strength": {5: {"remaining_pct": bd_row.signal_strength_5d or 0}}} if bd_row else None
-
-                es_dict = {"car_5d": es_row.car_5d, "car_20d": es_row.car_20d,
-                           "is_significant": es_row.is_significant} if es_row else None
-
-                opts_dict = {
-                    "pcr": opts_row.pcr,
-                    "iv_skew": opts_row.iv_skew,
-                    "unusual_volume_score": opts_row.unusual_volume_score,
-                    "max_pain": opts_row.max_pain,
-                } if opts_row else None
+                # Event study + decay: pooled history of comparable signals
+                group = pooled_alpha.get((event_schema.source_type.value, direction)) or {}
+                es_dict = group.get("event_study")
+                decay_fit = group.get("decay")
+                disclosed = event_schema.disclosure_date or event_schema.trade_date
+                bd_dict = decay_component(
+                    decay_fit, trading_days_since(disclosed, run_date)
+                )
+                if bd_dict:
+                    self._persist_bayesian_decay(ticker, event_id, run_date, direction, decay_fit)
 
                 # Earnings overlay
                 earnings_dict = None
                 try:
                     earnings_dict = await self.earnings_overlay.analyze(
-                        ticker, event_schema.trade_date, event_schema.direction.value
+                        ticker, event_schema.trade_date, direction
                     )
                 except Exception as e:
                     logger.debug("orchestrator.earnings_failed", ticker=ticker, error=str(e))
 
                 result = self.ensemble.score(
-                    direction=event_schema.direction.value,
+                    direction=direction,
                     monte_carlo=mc_dict,
                     hmm=hmm_dict,
                     garch=garch_dict,
@@ -1110,17 +1409,6 @@ class Orchestrator:
                 )
 
                 self._persist_ensemble(ticker, event_id, run_date, result)
-
-                # Alert for high-scoring ensemble signals
-                if self.notifier and result.get("total_score", 0) > 70:
-                    await self.notifier.send_ensemble_alert(
-                        ticker=ticker,
-                        direction=result.get("direction", ""),
-                        ensemble_score=result["total_score"],
-                        confidence=result.get("confidence", 0),
-                        recommendation=result.get("recommendation", ""),
-                        components=result.get("components", {}),
-                    )
 
             except Exception as e:
                 logger.warning("orchestrator.ensemble_failed", ticker=event_schema.ticker, error=str(e))

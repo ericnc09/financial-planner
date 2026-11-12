@@ -41,13 +41,36 @@ class EnsembleScorer:
     copula tail risk, Bayesian decay, event study, options flow, earnings
     overlay, news sentiment, and weather overlay (weather only contributes
     for weather-sensitive sectors).
+
+    Every component is scored 0-100 for the signal's own direction, with 50
+    meaning "no information": a component that favours buying scores above 50
+    for a buy and, by the same amount, below 50 for a sell.
     """
 
-    # Minimum number of models that must independently score >= 50 (neutral)
-    # to allow actionable (buy/sell) recommendations. Addresses multiple
-    # testing: with 9 models, requiring 4+ agreement filters ~30% of
-    # spurious signals where only 1-2 models happen to score high.
-    MIN_AGREEING_MODELS = 4
+    # Components that describe how risky a position is rather than which way
+    # the price should move. They move the total score but do not vote in the
+    # agreement gate (low volatility is not evidence that a buy — or a sell —
+    # is right).
+    RISK_COMPONENTS = frozenset({"garch", "copula_tail"})
+
+    # Agreement gate: an actionable recommendation needs at least this many
+    # directional components taking a side (a score of exactly 50 abstains),
+    # and at least this share of them on the signal's side.
+    MIN_DIRECTIONAL_VOTES = 3
+    MIN_AGREEMENT_RATIO = 0.60
+
+    # Recommendation cut-offs on the 0-100 total.
+    #
+    # With every component centred on 50, totals cluster tightly: on the 102
+    # most recent signals re-scored after the 2026-11 audit the median was
+    # 48.6, p95 57.4, p99 66.0 and the maximum 67.0. The former "strong"
+    # cut-off of 75 had never been reached by any of 4,621 stored scores.
+    # 65 marks roughly the top 1-2% of signals in that sample. It is a thin
+    # basis (one day, 61 tickers, pooled-alpha components not yet active):
+    # re-derive it from the stored score distribution after a few weeks.
+    ACTION_THRESHOLD = 55
+    STRONG_THRESHOLD = 65
+    HOLD_THRESHOLD = 40
 
     DEFAULT_WEIGHTS = {
         "monte_carlo": 0.140,
@@ -97,75 +120,43 @@ class EnsembleScorer:
             Dict with total score, component scores, confidence, and recommendation.
         """
         components = {}
-        available_weight = 0.0
 
-        # --- Monte Carlo (0-100) ---
+        def add(name: str, value: float | None):
+            # A scorer returns None when its input cannot support a score;
+            # the component is then simply absent and weights renormalize.
+            if value is not None and np.isfinite(value):
+                components[name] = float(value)
+
         if monte_carlo:
-            mc_score = self._score_monte_carlo(monte_carlo, direction)
-            components["monte_carlo"] = mc_score
-            available_weight += self.WEIGHTS["monte_carlo"]
-
-        # --- HMM Regime (0-100) ---
+            add("monte_carlo", self._score_monte_carlo(monte_carlo, direction))
         if hmm:
-            hmm_score = self._score_hmm(hmm, direction)
-            components["hmm_regime"] = hmm_score
-            available_weight += self.WEIGHTS["hmm_regime"]
-
-        # --- GARCH (0-100) ---
+            add("hmm_regime", self._score_hmm(hmm, direction))
         if garch:
-            garch_score = self._score_garch(garch)
-            components["garch"] = garch_score
-            available_weight += self.WEIGHTS["garch"]
-
-        # --- Fama-French (0-100) ---
+            add("garch", self._score_garch(garch))
         if fama_french:
-            ff_score = self._score_fama_french(fama_french)
-            components["fama_french"] = ff_score
-            available_weight += self.WEIGHTS["fama_french"]
-
-        # --- Copula Tail Risk (0-100, inverted: low tail risk = high score) ---
+            add("fama_french", self._score_fama_french(fama_french, direction))
         if copula:
-            cop_score = self._score_copula(copula)
-            components["copula_tail"] = cop_score
-            available_weight += self.WEIGHTS["copula_tail"]
-
-        # --- Bayesian Decay (0-100) ---
+            add("copula_tail", self._score_copula(copula))
         if bayesian_decay:
-            bd_score = self._score_bayesian_decay(bayesian_decay)
-            components["bayesian_decay"] = bd_score
-            available_weight += self.WEIGHTS["bayesian_decay"]
-
-        # --- Event Study (0-100) ---
+            add("bayesian_decay", self._score_bayesian_decay(bayesian_decay))
         if event_study:
-            es_score = self._score_event_study(event_study, direction)
-            components["event_study"] = es_score
-            available_weight += self.WEIGHTS["event_study"]
-
-        # --- Options Flow (0-100) ---
+            add("event_study", self._score_event_study(event_study, direction))
         if options_flow:
-            of_score = self._score_options_flow(options_flow, direction)
-            components["options_flow"] = of_score
-            available_weight += self.WEIGHTS["options_flow"]
-
-        # --- Earnings Overlay (0-100) ---
+            add("options_flow", self._score_options_flow(options_flow, direction))
         if earnings_overlay:
-            eo_score = earnings_overlay.get("score", 50)
-            components["earnings_overlay"] = float(eo_score)
-            available_weight += self.WEIGHTS["earnings_overlay"]
-
-        # --- News Sentiment (0-100) ---
+            add("earnings_overlay", earnings_overlay.get("score", 50))
         if news_sentiment:
             from src.analysis.news_sentiment import NewsSentimentAnalyzer
-            ns_score = NewsSentimentAnalyzer.score_for_ensemble(news_sentiment, direction)
-            components["news_sentiment"] = ns_score
-            available_weight += self.WEIGHTS["news_sentiment"]
-
-        # --- Weather Overlay (0-100, only for weather-sensitive sectors) ---
+            add("news_sentiment", NewsSentimentAnalyzer.score_for_ensemble(news_sentiment, direction))
         if weather_overlay:
-            wo_score = weather_overlay.get("score")
-            if wo_score is not None:
-                components["weather_overlay"] = float(wo_score)
-                available_weight += self.WEIGHTS["weather_overlay"]
+            add("weather_overlay", weather_overlay.get("score"))
+
+        return self.aggregate(direction, components)
+
+    def aggregate(self, direction: str, components: dict[str, float]) -> dict:
+        """Combine 0-100 component scores into the total, the agreement gate
+        and the recommendation."""
+        available_weight = sum(self.WEIGHTS[name] for name in components)
 
         # Weighted average (re-normalize if some models missing)
         if available_weight == 0:
@@ -178,25 +169,29 @@ class EnsembleScorer:
         n_models = len(components)
         confidence = round(available_weight / sum(self.WEIGHTS.values()), 4)
 
-        # Model agreement: count how many models independently score above neutral (50)
-        agreeing_models = sum(1 for s in components.values() if s >= 50)
-        agreement_ratio = agreeing_models / n_models if n_models > 0 else 0
+        # Model agreement among directional components that take a side
+        votes = {
+            name: s for name, s in components.items()
+            if name not in self.RISK_COMPONENTS and abs(s - 50.0) > 1e-6
+        }
+        n_votes = len(votes)
+        agreeing_models = sum(1 for s in votes.values() if s > 50)
+        agreement_ratio = agreeing_models / n_votes if n_votes else 0.0
+        agreement_met = (
+            n_votes >= self.MIN_DIRECTIONAL_VOTES
+            and agreement_ratio >= self.MIN_AGREEMENT_RATIO
+        )
 
-        # FDR-gated recommendation: require minimum model agreement for
-        # actionable recommendations. This addresses the multiple testing
-        # problem — with 9 models, some will score high by chance.
-        min_agreement = self.MIN_AGREEING_MODELS
-        agreement_met = agreeing_models >= min_agreement
-
-        # Recommendation (gated by model agreement)
-        if not agreement_met and total >= 55:
-            # Downgrade: models disagree, ensemble score is misleading
+        # Recommendation (gated by model agreement): with many components a
+        # high total can come from one or two extreme scores, so an
+        # actionable call also needs most directional models on its side.
+        if not agreement_met and total >= self.ACTION_THRESHOLD:
             rec = "hold"
-        elif total >= 75:
+        elif total >= self.STRONG_THRESHOLD:
             rec = "strong_buy" if direction == "buy" else "strong_sell"
-        elif total >= 55:
+        elif total >= self.ACTION_THRESHOLD:
             rec = "buy" if direction == "buy" else "sell"
-        elif total >= 40:
+        elif total >= self.HOLD_THRESHOLD:
             rec = "hold"
         else:
             rec = "avoid"
@@ -207,6 +202,7 @@ class EnsembleScorer:
             "components": {k: round(v, 1) for k, v in components.items()},
             "n_models": n_models,
             "agreeing_models": agreeing_models,
+            "n_directional_votes": n_votes,
             "agreement_ratio": round(agreement_ratio, 4),
             "agreement_met": agreement_met,
             "confidence": confidence,
@@ -220,14 +216,16 @@ class EnsembleScorer:
         )
         return result
 
-    # --- Component scorers (each returns 0-100) ---
+    # --- Component scorers (each returns 0-100, 50 = neutral, or None) ---
 
     def _score_monte_carlo(self, mc: dict, direction: str) -> float:
         h = mc.get("horizons", {})
         # Use 30-day horizon if available, else 90
         horizon = h.get(30) or h.get("30") or h.get(21) or h.get("21") or {}
-        prob = horizon.get("probability_of_profit", 0.5)
-        exp_ret = horizon.get("expected_return", 0)
+        prob = horizon.get("probability_of_profit")
+        exp_ret = horizon.get("expected_return")
+        prob = 0.5 if prob is None else prob
+        exp_ret = 0.0 if exp_ret is None else exp_ret
 
         if direction == "sell":
             prob = 1 - prob
@@ -239,132 +237,104 @@ class EnsembleScorer:
         return min(100, prob_score + ret_score)
 
     def _score_hmm(self, hmm: dict, direction: str) -> float:
-        state = hmm.get("current_state", "sideways")
-        probs = {
-            "bull": hmm.get("prob_bull", 0) or 0,
-            "bear": hmm.get("prob_bear", 0) or 0,
-            "sideways": hmm.get("prob_sideways", 0) or 0,
-        }
-        if direction == "buy":
-            return probs["bull"] * 100 + probs["sideways"] * 40
-        else:  # sell
-            return probs["bear"] * 100 + probs["sideways"] * 40
+        # Folded probabilities (bull + bear + sideways = 1). Sideways is worth
+        # exactly half, so a flat regime is neutral for buys and sells alike
+        # and the two scores always sum to 100.
+        bull = hmm.get("prob_bull", 0) or 0
+        bear = hmm.get("prob_bear", 0) or 0
+        sideways = hmm.get("prob_sideways", 0) or 0
+        total = bull + bear + sideways
+        if total < 0.5:
+            # Legacy 4/5-state row whose mild_bull/mild_bear mass was dropped:
+            # what is left is a rounding residue, not a regime.
+            return None
+        bull, bear, sideways = bull / total, bear / total, sideways / total
+        favourable = bull if direction == "buy" else bear
+        return favourable * 100 + sideways * 50
 
     def _score_garch(self, garch: dict) -> float:
-        # Lower volatility = higher score (more predictable)
-        # Contracting vol = better for entries
+        # Risk component: forecast volatility relative to recent realized
+        # volatility. Ratio 1.0 (no change expected) is neutral at 50;
+        # contracting vol scores higher, expanding vol lower.
         ratio_5d = garch.get("forecast_5d_ratio") or 1.0
         ratio_20d = garch.get("forecast_20d_ratio") or 1.0
         avg_ratio = (ratio_5d + ratio_20d) / 2
+        return 50.0 - float(np.clip((avg_ratio - 1.0) / 0.5, -1.0, 1.0)) * 30.0
 
-        if avg_ratio < 0.8:
-            return 80  # vol contracting significantly
-        elif avg_ratio < 1.0:
-            return 65  # vol mildly contracting
-        elif avg_ratio < 1.2:
-            return 45  # vol mildly expanding
-        else:
-            return 25  # vol expanding significantly
-
-    def _score_fama_french(self, ff: dict) -> float:
-        alpha = ff.get("alpha_annual") or 0
-        # Positive alpha = outperformance
-        alpha_score = min(60, max(0, (alpha + 0.10) / 0.20 * 60))
-
-        r2 = ff.get("r_squared") or 0
-        # Higher R² = model explains stock well = more reliable
-        r2_score = r2 * 40
-
-        return min(100, alpha_score + r2_score)
+    def _score_fama_french(self, ff: dict, direction: str) -> float | None:
+        # Factor-adjusted alpha, measured in standard errors. Positive alpha
+        # supports a buy and counts against a sell. +/-3 standard errors maps
+        # to the ends of the range.
+        t_stat = ff.get("alpha_tstat")
+        if t_stat is None:
+            return None
+        if direction == "sell":
+            t_stat = -t_stat
+        return 50.0 + 40.0 * float(np.clip(t_stat, -3.0, 3.0)) / 3.0
 
     def _score_copula(self, copula: dict) -> float:
-        # Invert: low tail risk = high score
+        # Risk component, inverted: low tail risk = high score
         tail_score = copula.get("tail_risk_score", 50)
         return max(0, 100 - tail_score)
 
-    def _score_bayesian_decay(self, bd: dict) -> float:
-        quality = bd.get("decay_quality", "no_signal")
-        quality_map = {
-            "slow_decay": 90,
-            "moderate_decay": 70,
-            "fast_decay": 45,
-            "flash": 20,
-            "no_alpha": 10,
-            "no_signal": 5,
-        }
-        base = quality_map.get(quality, 30)
+    def _score_bayesian_decay(self, bd: dict) -> float | None:
+        # How much of this kind of signal's historical post-disclosure alpha
+        # is still ahead of it. `remaining_share` falls from 1 toward 0 as the
+        # signal ages; `prob_alpha_positive` is the posterior probability that
+        # the pooled alpha (already direction-adjusted) is positive at all.
+        remaining = bd.get("remaining_share")
+        prob_positive = bd.get("prob_alpha_positive")
+        if remaining is None or prob_positive is None:
+            return None
+        remaining = float(np.clip(remaining, 0.0, 1.0))
+        edge = 2.0 * float(np.clip(prob_positive, 0.0, 1.0)) - 1.0  # -1 .. +1
+        return 50.0 + 40.0 * remaining * edge
 
-        # Boost if signal still strong at day 5
-        strength_5d = bd.get("signal_strength", {}).get(5, {}).get("remaining_pct", 0)
-        boost = min(10, strength_5d / 10)
+    def _score_event_study(self, es: dict, direction: str) -> float | None:
+        # Pooled post-disclosure CAR of comparable past signals (or a single
+        # event's CAR). Abnormal returns are direction-adjusted upstream:
+        # positive = whoever followed the signal's direction gained.
+        cars = [
+            v for v in (
+                es.get("car_5d") if es.get("car_5d") is not None else es.get("mean_car_5d"),
+                es.get("car_20d") if es.get("car_20d") is not None else es.get("mean_car_20d"),
+            ) if v is not None
+        ]
+        if not cars:
+            return None
+        car_avg = float(np.mean(cars))
+        score = 50.0 + float(np.clip(car_avg / 0.05, -1.0, 1.0)) * 30.0
+        if es.get("is_significant"):
+            score += 10.0 if car_avg > 0 else -10.0
+        return float(np.clip(score, 0.0, 100.0))
 
-        return min(100, base + boost)
+    def _score_options_flow(self, opts: dict, direction: str) -> float | None:
+        """Score options positioning 0-100 from cross-sectional percentiles.
 
-    def _score_event_study(self, es: dict, direction: str) -> float:
-        # Can be a single event dict or aggregate
-        car_5d = es.get("car_5d") or es.get("mean_car_5d") or 0
-        car_20d = es.get("car_20d") or es.get("mean_car_20d") or 0
-        is_sig = es.get("is_significant", False)
+        Equity put skew and put/call ratios have no fixed neutral level, so
+        each is read as a percentile against other tickers scored with the
+        same method (the median ticker is neutral by construction).
+        """
+        pcr_pct = opts.get("pcr_percentile")
+        skew_pct = opts.get("iv_skew_percentile")
+        if pcr_pct is None and skew_pct is None:
+            return None
 
-        # Positive CAR = good signal
-        car_avg = (car_5d + car_20d) / 2
-        car_score = min(70, max(0, (car_avg + 0.05) / 0.10 * 70))
+        tilt = 0.0  # > 0 bullish
+        if pcr_pct is not None:
+            tilt += (0.5 - pcr_pct) * 40.0   # low put/call ratio = bullish, +/-20
+        if skew_pct is not None:
+            tilt += (0.5 - skew_pct) * 30.0  # cheap downside protection = bullish, +/-15
+        if direction == "sell":
+            tilt = -tilt
 
-        # Significance bonus
-        sig_bonus = 30 if is_sig else 0
-
-        return min(100, car_score + sig_bonus)
-
-    def _score_options_flow(self, opts: dict, direction: str) -> float:
-        """Score options flow data 0-100 based on direction alignment."""
-        score = 50.0  # neutral baseline
-
-        # Put/Call Ratio alignment (0-35 points)
-        pcr = opts.get("pcr")
-        if pcr is not None:
-            if direction == "buy":
-                # Low PCR = bullish (more call buying)
-                if pcr < 0.5:
-                    score += 25
-                elif pcr < 0.7:
-                    score += 15
-                elif pcr > 1.2:
-                    score -= 20
-                elif pcr > 1.0:
-                    score -= 10
-            else:  # sell
-                # High PCR = bearish (more put buying)
-                if pcr > 1.2:
-                    score += 25
-                elif pcr > 1.0:
-                    score += 15
-                elif pcr < 0.5:
-                    score -= 20
-                elif pcr < 0.7:
-                    score -= 10
-
-        # IV Skew alignment (0-20 points)
-        iv_skew = opts.get("iv_skew")
-        if iv_skew is not None:
-            if direction == "buy":
-                # Negative skew (calls more expensive) = bullish
-                if iv_skew < -0.1:
-                    score += 15
-                elif iv_skew > 0.2:
-                    score -= 10  # bearish skew on a buy signal
-            else:
-                # Positive skew (puts more expensive) = bearish
-                if iv_skew > 0.2:
-                    score += 15
-                elif iv_skew < -0.1:
-                    score -= 10
-
-        # Unusual volume amplifier (0-15 points)
-        uv = opts.get("unusual_volume_score", 0)
+        # Unusual volume strengthens whatever the positioning says; it never
+        # creates a signal on its own.
+        uv = opts.get("unusual_volume_score") or 0
         if uv > 0.5:
-            score += min(15, uv * 15)
+            tilt *= 1.0 + 0.3 * min(float(uv), 1.0)
 
-        return max(0, min(100, score))
+        return float(np.clip(50.0 + tilt, 0.0, 100.0))
 
     # ── Batch FDR Correction ─────────────────────────────────────────────
 

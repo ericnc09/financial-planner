@@ -16,15 +16,26 @@ export const FactorExposure: React.FC<Props> = ({ data }) => {
 
   const maxAbs = Math.max(...factors.map(f => Math.abs(f.value || 0)), 0.1);
 
+  // One year of daily data pins alpha down only loosely: colour it only when
+  // it is at least two standard errors from zero.
+  const tStat = data.alpha_tstat;
+  const alphaSignificant = tStat != null && Math.abs(tStat) >= 2;
+  const alphaColor = !alphaSignificant
+    ? '#c9d1d9'
+    : (data.alpha_annual || 0) > 0 ? '#22c55e' : '#ef4444';
+
   return (
     <div style={{ background: '#161b22', borderRadius: 8, padding: 16, border: '1px solid #30363d' }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: '#e1e4e8', marginBottom: 4 }}>
         Fama-French Factor Exposure
       </div>
       <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 12 }}>
-        Alpha: <span style={{ color: (data.alpha_annual || 0) > 0 ? '#22c55e' : '#ef4444' }}>
+        Alpha: <span style={{ color: alphaColor }}>
           {((data.alpha_annual || 0) * 100).toFixed(1)}% ann.
         </span>
+        {tStat != null && (
+          <span> (t = {tStat.toFixed(1)}{alphaSignificant ? '' : ', not distinguishable from zero'})</span>
+        )}
         {' | '}R²: {((data.r_squared || 0) * 100).toFixed(0)}%
       </div>
 

@@ -137,13 +137,25 @@ class Backtester:
         events: list[tuple],
         hold_days: int,
     ) -> list[float]:
-        """For each event, get price at signal and price after hold_days."""
+        """For each event, get price at signal and price after hold_days.
+
+        Returns are in chronological order of the signal, so sequence-
+        dependent metrics (max drawdown) mean the same thing on every run.
+        """
         returns = []
         illiquid_skipped = 0
+        unpriced_skipped = 0
         sem = asyncio.Semaphore(5)
+        events = sorted(
+            events,
+            key=lambda item: (
+                getattr(item[0], "disclosure_date", None) or item[0].trade_date,
+                item[0].ticker,
+            ),
+        )
 
         async def _get_return(event, _cs, enrichment):
-            nonlocal illiquid_skipped
+            nonlocal illiquid_skipped, unpriced_skipped
             async with sem:
                 try:
                     # Liquidity gate: skip signals on stocks with insufficient
@@ -169,14 +181,17 @@ class Backtester:
                         event.ticker, start_str, end_str
                     )
                     if len(prices) < 2:
-                        # No price data — likely delisted. Treat as total loss
-                        # to prevent survivorship bias (only for events old
-                        # enough that data SHOULD exist).
+                        # No price data. That is far more often a symbol the
+                        # price source spells differently, or an outage, than
+                        # a bankruptcy — and a -100% booked here ignored the
+                        # trade direction as well. Skip and count instead of
+                        # inventing a return; a security that stopped trading
+                        # mid-hold still exits at its last traded price below.
                         days_since = (datetime.utcnow() - entry_date).days
                         if days_since > hold_days + 10:
-                            logger.debug("backtester.delisted_total_loss", ticker=event.ticker)
-                            return -1.0
-                        return None  # too recent, data not yet available
+                            unpriced_skipped += 1
+                            logger.debug("backtester.unpriced_skip", ticker=event.ticker)
+                        return None
 
                     entry_price = prices[0].get("adjClose")
                     exit_price = prices[-1].get("adjClose")
@@ -184,8 +199,7 @@ class Backtester:
                     if not entry_price or entry_price <= 0:
                         return None
                     if not exit_price or exit_price <= 0:
-                        # Exit price missing (delisted mid-hold) — total loss
-                        return -1.0
+                        return None
 
                     ret = (exit_price - entry_price) / entry_price
                     # Invert return for sells
@@ -204,14 +218,15 @@ class Backtester:
                     )
                     return None
 
-        tasks = [_get_return(e, cs, enr) for e, cs, enr in events]
-        for coro in asyncio.as_completed(tasks):
-            ret = await coro
-            if ret is not None:
-                returns.append(ret)
+        # gather() keeps the input order; as_completed() returned results in
+        # whatever order the network answered.
+        results = await asyncio.gather(*(_get_return(e, cs, enr) for e, cs, enr in events))
+        returns = [ret for ret in results if ret is not None]
 
         if illiquid_skipped:
             logger.info("backtester.illiquid_skipped", count=illiquid_skipped, hold_days=hold_days)
+        if unpriced_skipped:
+            logger.warning("backtester.unpriced_skipped", count=unpriced_skipped, hold_days=hold_days)
 
         return returns
 
@@ -225,8 +240,9 @@ class Backtester:
         losses = [r for r in returns if r <= 0]
         win_rate = len(wins) / n if n > 0 else 0
 
-        # Annualization factor
-        ann_factor = math.sqrt(252 / max(hold_days, 1))
+        # Annualization factor. hold_days here are CALENDAR days (entry and
+        # exit are date offsets), so there are 365 / hold_days periods a year.
+        ann_factor = math.sqrt(365 / max(hold_days, 1))
 
         # Standard deviation
         if n > 1:
@@ -238,10 +254,11 @@ class Backtester:
         # Sharpe ratio (annualized, assuming 0 risk-free for simplicity)
         sharpe = (avg_ret / std * ann_factor) if std > 0 else 0
 
-        # Sortino ratio (downside deviation)
+        # Sortino ratio. Downside deviation averages squared losses over ALL
+        # trades (target 0), not just over the losing ones.
         downside = [r for r in returns if r < 0]
         if downside:
-            downside_var = sum(r**2 for r in downside) / len(downside)
+            downside_var = sum(r**2 for r in downside) / n
             downside_std = math.sqrt(downside_var)
             sortino = (avg_ret / downside_std * ann_factor) if downside_std > 0 else 0
         else:

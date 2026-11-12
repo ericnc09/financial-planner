@@ -13,7 +13,15 @@ interface PerformanceSummary {
   by_conviction_bucket: Record<string, any> | null;
   top_winners: { ticker: string; direction: string; return_20d: number; conviction: number | null }[];
   top_losers: { ticker: string; direction: string; return_20d: number; conviction: number | null }[];
+  unpriced_signals?: number;
+  headline_basis?: string | null;
 }
+
+const SOURCE_COLORS: Record<string, string> = {
+  congressional: '#818cf8',
+  insider: '#fbbf24',
+  institutional: '#38bdf8',
+};
 
 const pct = (v: number | null | undefined) => v != null ? `${(v * 100).toFixed(1)}%` : '-';
 const retColor = (v: number | null | undefined) => {
@@ -50,7 +58,14 @@ export const PerformancePanel: React.FC = () => {
           <div style={{ fontSize: 15, fontWeight: 700, color: '#e1e4e8' }}>Signal Performance</div>
           <div style={{ fontSize: 11, color: '#8b949e' }}>
             {data.tracked_signals} of {data.total_signals} signals tracked
+            {data.unpriced_signals ? ` · ${data.unpriced_signals} without price data excluded` : ''}
           </div>
+          {data.headline_basis && (
+            <div style={{ fontSize: 11, color: '#8b949e' }}>
+              Headline figures: {data.headline_basis} signals, entered at the close after disclosure.
+              13F filings are shown under By Source only.
+            </div>
+          )}
         </div>
         <button onClick={() => fetch('/api/performance/update', { method: 'POST' })} style={{
           padding: '4px 12px', borderRadius: 6, border: '1px solid #30363d',
@@ -105,7 +120,7 @@ export const PerformancePanel: React.FC = () => {
           <div style={{ fontSize: 12, fontWeight: 600, color: '#c9d1d9', marginBottom: 8 }}>By Source</div>
           {Object.entries(sources).map(([src, stats]) => (
             <div key={src} style={{ marginBottom: 6, fontSize: 11 }}>
-              <span style={{ color: src === 'congressional' ? '#818cf8' : '#fbbf24', fontWeight: 600 }}>
+              <span style={{ color: SOURCE_COLORS[src] || '#fbbf24', fontWeight: 600 }}>
                 {src}
               </span>
               <span style={{ color: '#8b949e' }}> ({stats.n}) — </span>

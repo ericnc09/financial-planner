@@ -83,8 +83,8 @@ class EarningsOverlay:
 
             earnings_nearby = days_to_earnings is not None
 
-            # Historical surprise data
-            surprise_data = self._get_surprise_history(earnings_dates)
+            # Historical surprise data (quarters reported on or before the signal)
+            surprise_data = self._get_surprise_history(earnings_dates, as_of=signal_dt)
 
             # Compute alignment score
             score = self._compute_score(
@@ -114,32 +114,53 @@ class EarningsOverlay:
             logger.warning("earnings.failed", ticker=ticker, error=str(e))
             return None
 
-    def _get_surprise_history(self, earnings_dates) -> dict:
-        """Extract beat/miss history from earnings_dates DataFrame."""
-        surprises = []
-        for _, row in earnings_dates.iterrows():
+    def _get_surprise_history(self, earnings_dates, as_of: datetime | None = None) -> dict:
+        """Extract beat/miss history from the earnings_dates DataFrame.
+
+        Only quarters that have actually been reported count. yfinance lists
+        up to a year of *upcoming* dates with NaN "Reported EPS"; treating
+        those as misses dragged every beat rate down and left the latest
+        surprise undefined. With `as_of`, quarters reported after that moment
+        are ignored too, so a historical signal never sees later results.
+        """
+        import pandas as pd
+
+        surprises = []  # most recent first
+        for dt, row in earnings_dates.sort_index(ascending=False).iterrows():
+            if as_of is not None:
+                try:
+                    if dt.to_pydatetime().replace(tzinfo=None) > as_of:
+                        continue
+                except (AttributeError, TypeError):
+                    pass
             estimate = row.get("EPS Estimate")
             actual = row.get("Reported EPS")
-            if estimate is not None and actual is not None:
-                try:
-                    est = float(estimate)
-                    act = float(actual)
-                    if est != 0:
-                        surprise_pct = (act - est) / abs(est)
-                        surprises.append(surprise_pct)
-                except (ValueError, TypeError):
-                    continue
+            if pd.isna(estimate) or pd.isna(actual):
+                continue
+            try:
+                est = float(estimate)
+                act = float(actual)
+            except (ValueError, TypeError):
+                continue
+            if est == 0:
+                continue
+            surprises.append((act - est) / abs(est))
 
         if not surprises:
-            return {"n_quarters": 0, "beat_rate": None, "avg_surprise_pct": None}
+            return {"n_quarters": 0, "beat_rate": None, "avg_surprise_pct": None, "last_surprise_pct": None}
 
         beats = sum(1 for s in surprises if s > 0)
         return {
             "n_quarters": len(surprises),
             "beat_rate": round(beats / len(surprises), 4),
             "avg_surprise_pct": round(float(np.mean(surprises)), 4),
-            "last_surprise_pct": round(surprises[0], 4) if surprises else None,
+            "last_surprise_pct": round(surprises[0], 4),
         }
+
+    # Roughly 70% of US companies beat consensus EPS in a typical quarter, so
+    # that — not 50% — is the rate that carries no information.
+    NEUTRAL_BEAT_RATE = 0.70
+    MIN_QUARTERS = 4
 
     def _compute_score(
         self,
@@ -149,56 +170,41 @@ class EarningsOverlay:
         surprise_data: dict,
     ) -> float:
         """
-        Score 0-100 based on earnings alignment with signal direction.
+        Score 0-100: 50 + proximity x directional evidence.
 
-        Key insight: insider buy + upcoming earnings + history of beats = strongest signal.
+        Directional evidence is the company's surprise record relative to the
+        norm. Being close to earnings only *scales* that evidence; with no
+        evidence the score stays at 50 for buys and sells alike. (Adding a
+        proximity bonus on its own lifted both directions at once.)
         """
-        score = 50.0  # neutral baseline
+        if not earnings_nearby or days_to_earnings is None:
+            return 50.0
 
-        if not earnings_nearby:
-            return score  # no earnings proximity, stay neutral
-
-        # Proximity boost: closer to earnings = more informative
-        if days_to_earnings is not None:
-            abs_days = abs(days_to_earnings)
-            if abs_days <= 7:
-                proximity_boost = 20
-            elif abs_days <= 14:
-                proximity_boost = 15
-            else:
-                proximity_boost = 8
-
-            # Before earnings (insider knows something) is stronger than after
-            if days_to_earnings > 0:  # earnings upcoming
-                proximity_boost *= 1.2
-
-            score += proximity_boost
-
-        # Historical surprise alignment
+        evidence = 0.0  # > 0 favours buyers, < 0 favours sellers
         beat_rate = surprise_data.get("beat_rate")
-        if beat_rate is not None:
-            if direction == "buy":
-                # Buying before a company that usually beats = bullish
-                if beat_rate >= 0.75:
-                    score += 15
-                elif beat_rate >= 0.5:
-                    score += 5
-                else:
-                    score -= 10  # buying into a serial misser
-            else:  # sell
-                if beat_rate <= 0.25:
-                    score += 15  # selling a serial misser
-                elif beat_rate <= 0.5:
-                    score += 5
-                else:
-                    score -= 10  # selling against a serial beater
+        if beat_rate is not None and (surprise_data.get("n_quarters") or 0) >= self.MIN_QUARTERS:
+            evidence += (beat_rate - self.NEUTRAL_BEAT_RATE) / (1.0 - self.NEUTRAL_BEAT_RATE)
 
-        # Last surprise direction
         last_surprise = surprise_data.get("last_surprise_pct")
         if last_surprise is not None:
-            if direction == "buy" and last_surprise > 0.05:
-                score += 5  # momentum from last beat
-            elif direction == "sell" and last_surprise < -0.05:
-                score += 5
+            if last_surprise > 0.05:
+                evidence += 0.25
+            elif last_surprise < -0.05:
+                evidence -= 0.25
 
-        return max(0, min(100, score))
+        evidence = max(-1.0, min(1.0, evidence))
+        if direction == "sell":
+            evidence = -evidence
+
+        abs_days = abs(days_to_earnings)
+        if abs_days <= 7:
+            proximity = 1.0
+        elif abs_days <= 14:
+            proximity = 0.75
+        else:
+            proximity = 0.5
+        # A trade placed before the report says more than one placed after it
+        if days_to_earnings > 0:
+            proximity = min(1.2, proximity * 1.2)
+
+        return max(0.0, min(100.0, 50.0 + 25.0 * evidence * proximity))

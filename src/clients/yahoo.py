@@ -5,6 +5,8 @@ import numpy as np
 import structlog
 import yfinance as yf
 
+from src.clients.symbols import classify_security, yahoo_candidates
+
 logger = structlog.get_logger()
 
 
@@ -19,8 +21,14 @@ class YahooClient:
             df = await asyncio.to_thread(self._fetch_history, ticker, days)
             if df is None or df.empty:
                 return None
+            # A NaN or zero close turns into a non-finite log return that
+            # poisons every model downstream. Drop those bars once, here.
+            close = df["Close"].astype(float)
+            df = df[np.isfinite(close) & (close > 0)]
+            if len(df) < 2:
+                return None
             closes = df["Close"].values.astype(float)
-            volumes = df["Volume"].values.astype(float)
+            volumes = np.nan_to_num(df["Volume"].values.astype(float), nan=0.0)
             highs = df["High"].values.astype(float)
             lows = df["Low"].values.astype(float)
             returns = np.diff(np.log(closes))  # log returns
@@ -37,22 +45,36 @@ class YahooClient:
             return None
 
     def _fetch_history(self, ticker: str, days: int):
+        # yfinance's `end` is exclusive, so today's bar is left out on
+        # purpose: during market hours it is a partial bar (part of a day's
+        # move, a fraction of a day's volume) and feeding it to the models as
+        # if it were a full session flips regimes and distorts returns.
         end = datetime.now()
         start = end - timedelta(days=days)
-        t = yf.Ticker(ticker)
-        df = t.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
-        return df if not df.empty else None
+        for symbol in yahoo_candidates(ticker):
+            df = yf.Ticker(symbol).history(
+                start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d")
+            )
+            if df is not None and not df.empty:
+                if symbol != ticker:
+                    logger.info("yahoo.symbol_resolved", ticker=ticker, yahoo_symbol=symbol)
+                return df
+        return None
 
     async def enrich_ticker(self, ticker: str):
         """Enrich a ticker using yfinance — free, no rate limits."""
         from src.models.schemas import EnrichmentSchema
         try:
-            info, hist = await asyncio.to_thread(self._fetch_enrichment, ticker)
+            info, hist, symbol = await asyncio.to_thread(self._fetch_enrichment, ticker)
             if hist is None or hist.empty:
                 return None
 
+            close = hist["Close"].astype(float)
+            hist = hist[np.isfinite(close) & (close > 0)]
+            if hist.empty:
+                return None
             closes = hist["Close"].values.astype(float)
-            volumes = hist["Volume"].values.astype(float)
+            volumes = np.nan_to_num(hist["Volume"].values.astype(float), nan=0.0)
 
             current_price = float(closes[-1]) if len(closes) > 0 else None
 
@@ -67,10 +89,11 @@ class YahooClient:
             # RSI-14
             rsi = self._compute_rsi(closes)
 
-            # Drawdown from 52-week high
+            # Drawdown from 52-week high (252 trading days, same window the
+            # ticker-analysis path uses)
             drawdown = None
             if len(closes) > 0:
-                high_52w = float(np.max(closes))
+                high_52w = float(np.max(closes[-252:]))
                 if high_52w > 0 and current_price:
                     drawdown = (high_52w - current_price) / high_52w
 
@@ -104,6 +127,7 @@ class YahooClient:
                 avg_volume_30d=avg_vol,
                 sector=sector,
                 short_ratio=float(short_ratio) if short_ratio is not None else None,
+                security_type=classify_security(symbol, info),
             )
         except Exception as e:
             logger.warning("yahoo.enrich_failed", ticker=ticker, error=str(e))
@@ -111,15 +135,19 @@ class YahooClient:
 
     def _fetch_enrichment(self, ticker: str, days: int = 400):
         """Synchronous fetch of info + history for enrichment."""
-        t = yf.Ticker(ticker)
-        try:
-            info = t.info or {}
-        except Exception:
-            info = {}
-        end = datetime.now()
+        end = datetime.now()  # exclusive: complete sessions only
         start = end - timedelta(days=days)
-        hist = t.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
-        return info, hist if not hist.empty else (info, None)
+        for symbol in yahoo_candidates(ticker):
+            t = yf.Ticker(symbol)
+            hist = t.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
+            if hist is None or hist.empty:
+                continue
+            try:
+                info = t.info or {}
+            except Exception:
+                info = {}
+            return info, hist, symbol
+        return {}, None, None
 
     @staticmethod
     def _compute_rsi(closes: np.ndarray, period: int = 14) -> float | None:
@@ -158,9 +186,14 @@ class YahooClient:
             return []
 
     def _fetch_range(self, ticker: str, start_date: str, end_date: str):
-        t = yf.Ticker(ticker)
-        df = t.history(start=start_date, end=end_date)
-        return df if not df.empty else None
+        for symbol in yahoo_candidates(ticker):
+            df = yf.Ticker(symbol).history(start=start_date, end=end_date)
+            if df is not None and not df.empty:
+                close = df["Close"].astype(float)
+                df = df[np.isfinite(close) & (close > 0)]
+                if not df.empty:
+                    return df
+        return None
 
     async def close(self):
         pass

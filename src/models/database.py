@@ -249,6 +249,8 @@ class FamaFrenchExposure(Base):
     beta_rmw = Column(Float, nullable=True)
     beta_cma = Column(Float, nullable=True)
     r_squared = Column(Float, nullable=True)
+    # alpha / its OLS standard error — how many standard errors from zero
+    alpha_tstat = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -283,6 +285,10 @@ class EventStudyResult(Base):
     n_estimation = Column(Integer, nullable=True)
 
     daily_cars = Column(Text, nullable=True)  # JSON array of day-by-day CAR values
+    # What day 0 is: "disclosure" (first trading day after the filing became
+    # public) or NULL for legacy rows anchored on the trade date.
+    anchor = Column(String(20), nullable=True)
+    anchor_date = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -342,6 +348,8 @@ class BayesianDecayResult(Base):
     decay_quality = Column(String(20), nullable=True)
     signal_strength_5d = Column(Float, nullable=True)
     signal_strength_20d = Column(Float, nullable=True)
+    # Posterior probability that the pooled alpha is positive at all
+    prob_alpha_positive = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -476,11 +484,30 @@ class OptionsFlow(Base):
     total_put_volume = Column(Integer, nullable=True)
     total_call_oi = Column(Integer, nullable=True)
     total_put_oi = Column(Integer, nullable=True)
+    # 2 = pooled-expiry put/call ratio and wing-vs-wing skew on filtered
+    # quotes. NULL = legacy rows (single expiry, OTM-put vs ATM-call skew),
+    # which are not comparable and are never used as a percentile reference.
+    method_version = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("ticker", "analysis_date", name="uq_options_ticker_date"),
     )
+
+
+class WeatherSnapshot(Base):
+    """One national weather reading per pipeline cycle. The history is the
+    baseline that today's severe-alert count is compared against."""
+
+    __tablename__ = "weather_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(DateTime, nullable=False, unique=True, index=True)
+    n_severe_alerts = Column(Integer, nullable=True)
+    temp_anomaly_c = Column(Float, nullable=True)
+    degree_day_delta = Column(Float, nullable=True)
+    n_cities = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class NewsSentimentResult(Base):
@@ -567,6 +594,19 @@ def _ensure_sqlite_schema(engine):
         },
         "enrichments": {
             "short_ratio": "FLOAT",
+        },
+        "fama_french_exposures": {
+            "alpha_tstat": "FLOAT",
+        },
+        "event_study_results": {
+            "anchor": "VARCHAR(20)",
+            "anchor_date": "DATETIME",
+        },
+        "options_flow": {
+            "method_version": "INTEGER",
+        },
+        "bayesian_decay_results": {
+            "prob_alpha_positive": "FLOAT",
         },
     }
 

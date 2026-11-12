@@ -50,7 +50,12 @@ export const BayesianDecayChart: React.FC<Props> = ({ data }) => {
   return (
     <div style={{ background: '#161b22', borderRadius: 8, padding: 16, border: '1px solid #30363d' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e1e4e8' }}>Signal Decay</div>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#e1e4e8' }}>Signal Decay</div>
+          <div style={{ fontSize: 10, color: '#8b949e' }}>
+            Pooled from past signals of the same source and direction, after disclosure
+          </div>
+        </div>
         <div style={{
           padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600,
           background: color + '22', color, border: `1px solid ${color}44`,
@@ -93,8 +98,10 @@ export const BayesianDecayChart: React.FC<Props> = ({ data }) => {
           </span>
         </div>
         <div>
-          <span style={{ color: '#8b949e' }}>IR: </span>
-          <span style={{ color: '#c9d1d9', fontWeight: 600 }}>{(data.annualized_ir ?? 0).toFixed(2)}</span>
+          <span style={{ color: '#8b949e' }}>P(alpha &gt; 0): </span>
+          <span style={{ color: '#c9d1d9', fontWeight: 600 }}>
+            {data.prob_alpha_positive != null ? `${(data.prob_alpha_positive * 100).toFixed(0)}%` : '-'}
+          </span>
         </div>
         <div>
           <span style={{ color: '#8b949e' }}>Entry: </span>

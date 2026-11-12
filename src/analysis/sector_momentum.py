@@ -8,7 +8,8 @@ actionable than any single signal.
 Output per sector:
 - aggregate buy / sell / hold counts
 - avg ensemble score
-- sector momentum score (0-100): directional conviction across the sector
+- sector momentum score (0-100): 50 is neutral, above 50 is net buying,
+  below 50 is net selling; distance from 50 grows with breadth and conviction
 - recommendation: overweight / neutral / underweight
 """
 
@@ -81,17 +82,23 @@ def compute_sector_momentum(results: list[dict]) -> dict[str, dict]:
                 vols.append(garch.get("current_conditional_vol_annual", 0))
         avg_vol = sum(vols) / len(vols) if vols else None
 
-        # Sector momentum score (0-100):
-        # Directional breadth × avg score × regime alignment
+        # Sector momentum score (0-100), signed around 50:
+        #   50 + 50 x net direction x strength
+        # where strength is the average score on the dominant side, nudged by
+        # how well the regime agrees with that side. (Previously a strong SELL
+        # consensus pushed the score UP, so "underweight" could never trigger.)
         if n == 0:
             momentum_score = 50.0
         else:
             net_direction = (buys - sells) / n          # -1 to +1
-            breadth = abs(net_direction)                 # 0 to 1
-            direction_sign = 1 if net_direction >= 0 else -1
-            base = avg_buy_score if direction_sign >= 0 else avg_sell_score
-            regime_boost = 1.0 + (avg_hmm_bull - 0.5) * 0.3  # 0.85–1.15
-            momentum_score = min(100, max(0, base * breadth * regime_boost + 50 * (1 - breadth)))
+            if net_direction >= 0:
+                base = avg_buy_score
+                regime_boost = 1.0 + (avg_hmm_bull - 0.5) * 0.3  # 0.85–1.15
+            else:
+                base = avg_sell_score
+                regime_boost = 1.0 + (0.5 - avg_hmm_bull) * 0.3
+            strength = min(1.0, max(0.0, base / 100.0 * regime_boost))
+            momentum_score = min(100, max(0, 50 + 50 * net_direction * strength))
 
         if buys > sells and momentum_score >= 60:
             recommendation = "overweight"

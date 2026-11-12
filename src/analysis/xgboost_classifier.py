@@ -6,6 +6,10 @@ Replaces arbitrary hand-tuned scoring with data-driven feature weights.
 
 Bias-reduction measures:
 - Sample size guards: 200+ for XGBoost, falls back to L1-logistic for <200
+- Imputation and scaling live INSIDE the model pipeline, so each CV fold
+  learns its medians and scales from its own training rows only
+- Purged temporal CV: training rows whose 20-day label window reaches into
+  the test fold are dropped (their outcome was not known yet at that time)
 - Per-fold feature selection: permutation importance runs inside each CV fold
   (not on full data) to prevent feature selection leakage
 - Majority-vote feature consensus: only features selected in >50% of folds survive
@@ -16,7 +20,7 @@ import os
 import pickle
 import numpy as np
 import structlog
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = structlog.get_logger()
 
@@ -26,6 +30,11 @@ DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "xgboost_model.pkl"
 # Minimum samples for each model type
 MIN_SAMPLES_XGBOOST = 200
 MIN_SAMPLES_LOGISTIC = 50
+
+# The label is a 20-trading-day return, known about 30 calendar days after
+# the signal. Training rows closer than this to a test fold are purged.
+LABEL_HORIZON_DAYS = 30
+MIN_FOLD_TRAIN_SAMPLES = 20
 
 # Features extracted from enrichment + conviction + model outputs
 FEATURE_COLS = [
@@ -89,6 +98,7 @@ class XGBoostSignalClassifier:
         self.feature_impute_values = None  # median fallback per feature
         self.feature_importance = None
         self.train_metrics = None
+        self._dates: list = []
 
     # ── Training ──────────────────────────────────────────────────────────
 
@@ -107,16 +117,11 @@ class XGBoostSignalClassifier:
             Dict with training metrics, feature importance, and CV scores.
         """
         try:
-            from xgboost import XGBClassifier
-            from sklearn.linear_model import LogisticRegression
             from sklearn.metrics import accuracy_score, roc_auc_score
-            from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+            from sklearn.model_selection import TimeSeriesSplit
             from sklearn.inspection import permutation_importance
         except Exception as e:
-            # Catch more than ImportError: xgboost raises XGBoostError at import
-            # time when the OpenMP runtime (libomp) is missing on macOS.
-            logger.error("xgboost.import_failed", error=str(e),
-                         hint="pip install xgboost scikit-learn; on macOS: brew install libomp")
+            logger.error("xgboost.import_failed", error=str(e), hint="pip install scikit-learn")
             return {"status": "error", "message": f"model libraries unavailable: {e}"}
 
         X, y, valid_count = self._build_dataset(records)
@@ -127,21 +132,21 @@ class XGBoostSignalClassifier:
                 "min_required": MIN_SAMPLES_LOGISTIC,
                 "message": f"Need {MIN_SAMPLES_LOGISTIC}+ labeled signals, got {valid_count or 0}",
             }
+        if len(np.unique(y)) < 2:
+            return {
+                "status": "insufficient_data",
+                "n_records": valid_count,
+                "message": "All labeled signals have the same outcome; nothing to learn.",
+            }
 
         n_samples = len(X)
+        dates = self._dates
+        # Reported for transparency only; the pipeline does its own imputation
         self.feature_impute_values = self._fit_impute_values(X)
-        X_model = self._impute_array(X)
 
         # ── Step 1: Select model type based on sample size ──
         if n_samples < MIN_SAMPLES_XGBOOST:
             self.model_type = "logistic"
-            self.model = LogisticRegression(
-                penalty="l1",
-                solver="saga",
-                C=1.0,
-                max_iter=5000,
-                random_state=42,
-            )
             logger.info(
                 "xgboost.using_logistic_fallback",
                 n_samples=n_samples,
@@ -149,30 +154,41 @@ class XGBoostSignalClassifier:
             )
         else:
             self.model_type = "xgboost"
-            self.model = XGBClassifier(
-                n_estimators=self.n_estimators,
-                max_depth=self.max_depth,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=1.0,    # L1 regularization
-                reg_lambda=1.0,   # L2 regularization
-                random_state=42,
-                eval_metric="logloss",
-            )
+            try:
+                import xgboost  # noqa: F401
+            except Exception as e:
+                # More than ImportError: xgboost raises XGBoostError at import
+                # time when the OpenMP runtime (libomp) is missing on macOS.
+                # The logistic model does not need it, so use that instead of
+                # refusing to train.
+                self.model_type = "logistic"
+                logger.warning(
+                    "xgboost.unavailable_using_logistic", error=str(e)[:200],
+                    hint="pip install xgboost; on macOS: brew install libomp",
+                )
 
-        # ── Step 2: Nested CV with per-fold feature selection ──
-        # Feature selection is done INSIDE each CV fold to prevent leakage:
-        # fitting on all data first would bias which features survive toward
-        # the full sample, inflating CV AUC estimates.
+        # ── Step 2: Purged temporal CV with per-fold feature selection ──
+        # Feature selection, imputation and scaling all happen INSIDE each
+        # fold: fitting any of them on all data first would let the test rows
+        # shape the model they are supposed to evaluate.
         n_splits = min(5, max(2, n_samples // 40))
         tscv = TimeSeriesSplit(n_splits=n_splits)
 
         cv_scores = []
         per_fold_features = []  # track which features each fold selects
+        n_purged = 0
 
-        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X_model)):
-            X_train_fold, X_test_fold = X_model[train_idx], X_model[test_idx]
+        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
+            kept = self._purge(train_idx, test_idx, dates)
+            n_purged += len(train_idx) - len(kept)
+            train_idx = kept
+            if (
+                len(train_idx) < MIN_FOLD_TRAIN_SAMPLES
+                or len(np.unique(y[train_idx])) < 2
+            ):
+                continue
+
+            X_train_fold, X_test_fold = X[train_idx], X[test_idx]
             y_train_fold, y_test_fold = y[train_idx], y[test_idx]
 
             # Feature selection on training fold only
@@ -213,6 +229,13 @@ class XGBoostSignalClassifier:
                 fold_auc = 0.5
             cv_scores.append(fold_auc)
 
+        if not cv_scores:
+            return {
+                "status": "insufficient_data",
+                "n_records": valid_count,
+                "message": "No CV fold had enough purged training data with both outcomes.",
+            }
+
         cv_auc_mean = float(np.mean(cv_scores))
         cv_auc_std = float(np.std(cv_scores))
 
@@ -223,7 +246,8 @@ class XGBoostSignalClassifier:
         self.selected_features = []
         selected_indices = []
         for i, feat in enumerate(FEATURE_COLS):
-            if feat_counts.get(feat, 0) >= majority_threshold:
+            # strictly more than half the folds
+            if feat_counts.get(feat, 0) > majority_threshold:
                 self.selected_features.append(feat)
                 selected_indices.append(i)
 
@@ -233,7 +257,7 @@ class XGBoostSignalClassifier:
             self.selected_features = [f for f, _ in ranked_feats]
             selected_indices = [FEATURE_COLS.index(f) for f in self.selected_features]
 
-        X_selected = X_model[:, selected_indices]
+        X_selected = X[:, selected_indices]
         logger.info(
             "xgboost.feature_selection",
             n_original=len(FEATURE_COLS),
@@ -245,8 +269,16 @@ class XGBoostSignalClassifier:
         # ── Step 4: Null model benchmark ──
         # A null model predicts the majority class — if CV AUC <= 0.55,
         # the model has no real predictive power
+        # ...and with a handful of small folds the mean itself is noisy, so
+        # it must also clear 0.5 by more than one standard error.
         null_auc = 0.5
-        is_better_than_null = cv_auc_mean > 0.55
+        cv_auc_se = (
+            float(np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores)))
+            if len(cv_scores) > 1 else float("inf")
+        )
+        is_better_than_null = bool(
+            cv_auc_mean > 0.55 and (cv_auc_mean - cv_auc_se) > null_auc
+        )
 
         if not is_better_than_null:
             logger.warning(
@@ -264,11 +296,13 @@ class XGBoostSignalClassifier:
         train_acc = accuracy_score(y, y_pred)
         train_auc = roc_auc_score(y, y_prob) if len(np.unique(y)) > 1 else 0.0
 
-        # Feature importance (from the final model)
+        # Feature importance (from the final model). The logistic
+        # coefficients are on standardized features, so they are comparable.
+        estimator = self.model.named_steps["model"]
         if self.model_type == "xgboost":
-            importances = self.model.feature_importances_
+            importances = estimator.feature_importances_
         else:
-            importances = np.abs(self.model.coef_[0])
+            importances = np.abs(estimator.coef_[0])
 
         self.feature_importance = {
             self.selected_features[i]: round(float(importances[i]), 4)
@@ -294,12 +328,15 @@ class XGBoostSignalClassifier:
             "train_auc": round(train_auc, 4),
             "cv_auc_mean": round(cv_auc_mean, 4),
             "cv_auc_std": round(cv_auc_std, 4),
-            "cv_n_splits": n_splits,
+            "cv_auc_se": round(cv_auc_se, 4) if np.isfinite(cv_auc_se) else None,
+            "cv_n_splits": len(cv_scores),
+            "cv_purged_rows": int(n_purged),
+            "label_horizon_days": LABEL_HORIZON_DAYS,
             "overfit_gap": round(overfit_gap, 4),
             "is_overfitting": overfit_gap > 0.15,
             "is_better_than_null": is_better_than_null,
             "feature_importance": dict(sorted_features),
-            "missing_imputation": "median",
+            "missing_imputation": "median (fit per fold, inside the pipeline)",
             "trained_at": datetime.utcnow().isoformat(),
         }
 
@@ -343,7 +380,8 @@ class XGBoostSignalClassifier:
         cols = self.selected_features if self.selected_features else FEATURE_COLS
         row = [self._coerce_float(features.get(col)) for col in cols]
         X = np.array([row])
-        if self.feature_impute_values:
+        if self.feature_impute_values and not hasattr(self.model, "named_steps"):
+            # Model saved before imputation moved into the pipeline
             fill = np.array([self.feature_impute_values.get(col, 0.0) for col in cols])
             X = np.where(np.isnan(X), fill.reshape(1, len(cols)), X)
         prob = float(self.model.predict_proba(X)[0, 1])
@@ -418,26 +456,60 @@ class XGBoostSignalClassifier:
     # ── Model factory ────────────────────────────────────────────────────
 
     def _make_model(self):
-        """Create a fresh model instance based on the selected model_type."""
-        from xgboost import XGBClassifier
+        """Fresh impute -> scale -> estimator pipeline for the selected model_type.
+
+        Keeping the imputer and scaler inside the pipeline means they are
+        refit on whatever rows the pipeline is trained on (one CV fold, or
+        everything for the final model) and applied unchanged at prediction.
+        Scaling matters for the L1 logistic model: market cap (~1e10) next to
+        RSI (~50) otherwise makes the penalty meaningless and stops the
+        solver converging. keep_empty_features keeps column positions stable
+        when a feature is missing for every row in a fold.
+        """
+        from sklearn.impute import SimpleImputer
         from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
 
         if self.model_type == "logistic":
-            return LogisticRegression(
+            estimator = LogisticRegression(
                 penalty="l1", solver="saga", C=1.0,
                 max_iter=5000, random_state=42,
             )
-        return XGBClassifier(
-            n_estimators=self.n_estimators,
-            max_depth=self.max_depth,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=1.0,
-            reg_lambda=1.0,
-            random_state=42,
-            eval_metric="logloss",
-        )
+        else:
+            from xgboost import XGBClassifier
+
+            estimator = XGBClassifier(
+                n_estimators=self.n_estimators,
+                max_depth=self.max_depth,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=1.0,
+                reg_lambda=1.0,
+                random_state=42,
+                eval_metric="logloss",
+            )
+        return Pipeline([
+            ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scale", StandardScaler()),
+            ("model", estimator),
+        ])
+
+    @staticmethod
+    def _purge(train_idx: np.ndarray, test_idx: np.ndarray, dates: list) -> np.ndarray:
+        """Drop training rows whose label window overlaps the test fold.
+
+        A signal's 20-day outcome is only known ~30 calendar days later. A
+        training row dated inside that window before the first test row
+        carries an outcome that was still in the future at test time.
+        """
+        if not dates or any(dates[i] is None for i in train_idx) or any(
+            dates[i] is None for i in test_idx
+        ):
+            return train_idx
+        cutoff = min(dates[i] for i in test_idx) - timedelta(days=LABEL_HORIZON_DAYS)
+        return np.array([i for i in train_idx if dates[i] <= cutoff], dtype=int)
 
     # ── Dataset builder ───────────────────────────────────────────────────
 
@@ -452,6 +524,7 @@ class XGBoostSignalClassifier:
         )
         rows = []
         labels = []
+        dates = []
         for r in records:
             ret = r.get("return_20d")
             if ret is None:
@@ -459,10 +532,26 @@ class XGBoostSignalClassifier:
             row = [self._coerce_float(r.get(col)) for col in FEATURE_COLS]
             rows.append(row)
             labels.append(1 if ret > 0 else 0)
+            dates.append(self._parse_date(
+                r.get("date") or r.get("trade_date") or r.get("signal_date")
+            ))
 
+        # Row-aligned signal dates (None where unknown), used to purge CV folds
+        self._dates = dates
         if not rows:
             return None, None, 0
         return np.array(rows), np.array(labels), len(rows)
+
+    @staticmethod
+    def _parse_date(value) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None)
+        try:
+            return datetime.fromisoformat(str(value)[:19]).replace(tzinfo=None)
+        except ValueError:
+            return None
 
     @staticmethod
     def _coerce_float(value) -> float:

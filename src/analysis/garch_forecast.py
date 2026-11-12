@@ -45,6 +45,9 @@ class GARCHForecaster:
             if horizons is None:
                 horizons = [5, 20]
 
+            returns = np.asarray(returns, dtype=float)
+            returns = returns[np.isfinite(returns)]
+
             if len(returns) < 100:
                 logger.warning("garch.insufficient_data", n=len(returns))
                 return None
@@ -71,29 +74,37 @@ class GARCHForecaster:
             beta = float(params.get("beta[1]", 0))
             persistence = alpha + beta
 
-            # Current conditional variance (last fitted value)
-            cond_vol_series = result.conditional_volatility
-            cond_var = float(cond_vol_series.iloc[-1] ** 2)
+            # Forecast path from arch itself: variance for days T+1 .. T+max_h,
+            # conditional on everything up to and including the last return.
+            # (The last *fitted* variance is the variance OF day T given T-1 —
+            # it does not contain day T's shock, so forecasting from it lags
+            # the market by one day and badly understates vol after a big move.)
+            max_h = int(max(horizons))
+            var_path = np.asarray(
+                result.forecast(horizon=max_h, reindex=False).variance.iloc[-1].values,
+                dtype=float,
+            )
+            if len(var_path) < max_h or not np.all(np.isfinite(var_path)) or np.any(var_path <= 0):
+                raise ValueError("non-finite GARCH variance forecast")
+
+            # Next-day conditional variance
+            cond_var = float(var_path[0])
 
             # Long-run variance: omega / (1 - alpha - beta)
-            if persistence < 1.0:
+            if persistence < 0.999:
                 long_run_var = omega / (1 - persistence)
             else:
-                long_run_var = cond_var  # fallback
+                long_run_var = cond_var  # integrated GARCH: no finite long-run level
 
             # Historical realized volatility for comparison
             hist_vol_20d = float(np.std(returns[-20:]) * np.sqrt(252))
             hist_vol_60d = float(np.std(returns[-60:]) * np.sqrt(252))
 
-            # Multi-step forecast
             forecasts = {}
             for h in horizons:
-                # h-step ahead conditional variance forecast
-                # sigma^2(h) = omega * sum(persistence^i) + persistence^h * current_var
-                if persistence < 1.0:
-                    forecast_var = long_run_var + (persistence ** h) * (cond_var - long_run_var)
-                else:
-                    forecast_var = cond_var
+                # Volatility over an h-day holding period = average of the
+                # daily variance forecasts for days 1..h.
+                forecast_var = float(np.mean(var_path[:h]))
 
                 # Convert from pct^2 back to decimal
                 forecast_vol_daily = np.sqrt(forecast_var) / 100
@@ -146,10 +157,14 @@ class GARCHForecaster:
         self,
         returns: np.ndarray,
         horizons: list[int] | None,
-    ) -> dict:
+    ) -> dict | None:
         """EWMA (RiskMetrics λ=0.94) fallback when GARCH fails to converge."""
         if horizons is None:
             horizons = [5, 20]
+        returns = np.asarray(returns, dtype=float)
+        returns = returns[np.isfinite(returns)]
+        if len(returns) < 20:
+            return None
         lam = 0.94
         var_t = float(np.var(returns[-20:]))
         # Recursive EWMA variance

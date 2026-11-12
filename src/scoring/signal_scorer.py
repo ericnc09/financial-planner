@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 
 import structlog
@@ -5,6 +6,19 @@ import structlog
 from src.models.schemas import Direction, SmartMoneyEventSchema, SourceType
 
 logger = structlog.get_logger()
+
+# Insider actors are stored as "Name (Officer Title)". Titles are matched on
+# whole words inside the parentheses only: substring matching on the full
+# string gave "Cook", "Cooper" and "Coons" a COO boost, counted "chairman"
+# twice (as an executive and as a "chair"), and treated every vice president
+# as the president.
+_TITLE = re.compile(r"\(([^()]*)\)\s*$")
+_VICE_PRESIDENT = re.compile(r"\b(?:(?:senior|executive)\s+)?vice[\s-]+president\b|\b[se]?vp\b")
+_SENIOR_TITLE = re.compile(
+    r"\b(?:ceo|cfo|coo|chief\s+(?:executive|financial|operating|operations)(?:\s+officer)?"
+    r"|chair(?:man|woman|person)?|president|director)\b"
+)
+_CONGRESS_LEADERSHIP = re.compile(r"\b(?:speaker|leader|chair(?:man|woman|person)?|whip)\b")
 
 
 class SignalScorer:
@@ -55,18 +69,16 @@ class SignalScorer:
         else:
             base = 0.5
         actor_lower = actor.lower()
-        # Boost for high-ranking insiders
-        if any(
-            title in actor_lower
-            for title in ["ceo", "cfo", "coo", "chairman", "director", "president"]
-        ):
-            base = min(1.0, base + 0.2)
-        # Boost for committee chairs / leadership
-        if any(
-            kw in actor_lower
-            for kw in ["speaker", "leader", "chair", "whip"]
-        ):
-            base = min(1.0, base + 0.15)
+        if source_type == SourceType.INSIDER:
+            # Boost for high-ranking insiders, read from the title only
+            match = _TITLE.search(actor_lower)
+            title = _VICE_PRESIDENT.sub(" ", match.group(1)) if match else ""
+            if _SENIOR_TITLE.search(title):
+                base = min(1.0, base + 0.2)
+        elif source_type == SourceType.CONGRESSIONAL:
+            # Boost for committee chairs / leadership
+            if _CONGRESS_LEADERSHIP.search(actor_lower):
+                base = min(1.0, base + 0.15)
         return base
 
     def _trade_size(
