@@ -16,6 +16,18 @@ WhatsApp only allows approved templates for messages the business starts. In Wha
 
 The names and variable order must match exactly, or sends will fail.
 
+### `daily_digest`
+
+This is the only template scheduled runs send. The other four are used by per-event alerts and the notify scripts.
+
+```text
+Disclosure digest for {{1}}.
+{{2}}
+Highlights: {{3}}
+All trades: {{4}}
+Research signal, not financial advice.
+```
+
 ### `conviction_alert`
 
 ```text

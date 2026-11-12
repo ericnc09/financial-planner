@@ -32,6 +32,13 @@ class Settings(BaseSettings):
 
     # Alerts
     alert_channel: Literal["slack", "whatsapp"] = "slack"
+    digest_url: str = "https://ericcosta.ca/finalyse"
+    # Off until Capitol Trades' terms are confirmed to allow republishing its data
+    digest_include_congressional: bool = False
+
+    # Beta email (Buttondown); only subscribers with this tag receive it
+    buttondown_api_key: str | None = None
+    beta_approved_tag: str = "beta-approved"
     slack_webhook_url: str | None = None
 
     # WhatsApp Cloud API (used when alert_channel = "whatsapp")

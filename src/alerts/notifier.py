@@ -173,6 +173,41 @@ class SlackNotifier:
         }
         return await self._send(payload, "top_pick", ticker)
 
+    async def send_digest(self, digest: dict, url: str) -> bool:
+        """Send the one compiled daily message, linking to the full list."""
+        if not self._client:
+            return False
+
+        lines = "\n".join(
+            f"*{h['ticker']}*: {h['headline']}" for h in digest["highlights"]
+        ) or "No insider buys stood out in this batch."
+        payload = {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": f"Disclosure digest: {digest['date']}"},
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"{_digest_summary(digest)}\n\n{lines}"},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"<{url}|See all {digest['counts']['trades']} trades>",
+                    },
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn", "text": "_Research signal, not financial advice._"}
+                    ],
+                },
+            ]
+        }
+        return await self._send(payload, "digest", digest["date"])
+
     async def _send(self, payload: dict, alert_type: str, ticker: str) -> bool:
         """Post payload to Slack webhook."""
         try:
@@ -310,6 +345,17 @@ class WhatsAppNotifier:
             "summary",
         )
 
+    async def send_digest(self, digest: dict, url: str) -> bool:
+        """Send the one compiled daily message, linking to the full list."""
+        highlights = "; ".join(
+            f"{h['ticker']}: {h['headline']}" for h in digest["highlights"]
+        )
+        return await self._send_template(
+            "daily_digest",
+            [digest["date"], _digest_summary(digest), highlights, url],
+            "digest",
+        )
+
     async def _send_template(
         self, template: str, variables: list, ticker: str
     ) -> bool:
@@ -371,6 +417,14 @@ def create_notifier(settings) -> SlackNotifier | WhatsAppNotifier:
     if not notifier.configured:
         logger.warning("whatsapp.not_configured", detail="alerts will not be sent")
     return notifier
+
+
+def _digest_summary(digest: dict) -> str:
+    counts = digest["counts"]
+    return (
+        f"{counts['trades']} new trades across {counts['tickers']} tickers: "
+        f"{counts['buys']} buys, {counts['sells']} sells"
+    )
 
 
 def _template_text(value) -> str:

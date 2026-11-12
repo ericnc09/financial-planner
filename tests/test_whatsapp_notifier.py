@@ -132,6 +132,14 @@ def test_sent_variable_counts_match_setup_doc():
         await notifier.send_ensemble_alert("RY", "buy", 80.0, 0.9, "buy", {})
         await notifier.send_top_pick(pick)
         await notifier.send_analysis_summary("Run", [])
+        await notifier.send_digest(
+            {
+                "date": "2026-11-09",
+                "counts": {"trades": 1, "tickers": 1, "buys": 1, "sells": 0},
+                "highlights": [],
+            },
+            "https://example.test",
+        )
 
     asyncio.run(send_all())
 

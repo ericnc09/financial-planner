@@ -1,9 +1,8 @@
 name: Smart Money Pipeline
 
+# Scheduled runs happen on the local cron via scripts/run_pipeline.sh. A schedule
+# here would send a second daily digest from its separate database.
 on:
-  schedule:
-    - cron: '0 12 * * 1-5'   # 7 AM ET (12 PM UTC) — before market open
-    - cron: '30 21 * * 1-5'  # 5:30 PM ET (21:30 UTC) — after market close
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 # Minimal permissions — read code only, write nothing to the repo
